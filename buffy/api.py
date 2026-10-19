@@ -327,7 +327,14 @@ class BuffyApi:
 
     def _capture_social_session(self, auth_window, provider):
         """Read back a confirmed logged-in page and persist only MangaBuff cookies."""
-        details = auth_window.evaluate_js(r"""
+        details = {}
+        details_ready = threading.Event()
+
+        def _on_details(result):
+            details["value"] = result
+            details_ready.set()
+
+        auth_window.evaluate_js(r"""
             (async () => {
                 try {
                     const response = await fetch('/mine', {
@@ -349,7 +356,10 @@ class BuffyApi:
                     return { status: 0, url: location.href, csrf: '', loginPage: true, error: String(error) };
                 }
             })()
-        """)
+        """, _on_details)
+        if not details_ready.wait(12):
+            return None
+        details = details.get("value")
         if not isinstance(details, dict):
             return None
         try:
