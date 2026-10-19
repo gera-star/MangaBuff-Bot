@@ -54,7 +54,7 @@ def _rx(pattern, template):
 # ([compiled regexes], template | None | callable(match, ctx) -> str | None)
 RULES = [
     # --- daemon lifecycle -------------------------------------------------
-    _rx(r"^🚀 MangaBuff Miner", "🚀 Buffy начал работу"),
+    _rx(r"^🚀 MangaBuff Miner", "🚀 2R2R запущен"),
     _rx(r"^📊 Статистика аккаунта обновлена", "📊 Статистика аккаунта обновлена"),
     _rx(r"^💤 Все задачи проверены\. Ближайшее действие: (?P<what>.+?) \(~(?P<wait>.+?)\)",
         lambda m, c: f"😴 Всё сделано. Дальше — {NEXT_NAMES.get(m['what'], m['what'].lower())} через {m['wait']}"),
@@ -66,7 +66,7 @@ RULES = [
     _rx(r"^⚠️ Модуль «(?P<mod>\w+)» ошибка",
         lambda m, c: f"⚠️ {MODULES.get(m['mod'], m['mod'])}: не получилось, попробую в следующий раз"),
     _rx(r"^🛑 Watchdog", "🔄 Бот перестал отвечать — перезапускаю"),
-    _rx(r"^⚠️ Ошибка в Daemon цикле", "⚠️ Сбой в цикле задач — продолжу через 30 секунд"),
+    _rx(r"^⚠️ Ошибка в Daemon цикле", "⚠️ Сбой в фоновых задачах — продолжу через 30 секунд"),
     _from_tr("log_stopping", "⏹️ Останавливаюсь…"),
     _rx(r"^Stopping", "⏹️ Останавливаюсь…"),
     _rx(r"^✅ Вход выполнен: ", lambda m, c: c["text"]),
