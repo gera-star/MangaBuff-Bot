@@ -26,6 +26,8 @@ def get_base_path():
             try:
                 shutil.copytree(legacy, target)
             except OSError:
+                # Remove an incomplete copy so a later launch can retry safely.
+                shutil.rmtree(target, ignore_errors=True)
                 # If migration cannot complete, keep using the existing working data.
                 return legacy
         return target
