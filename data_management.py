@@ -56,6 +56,18 @@ class DataManager:
         return data.get("email"), data.get("password")
 
     @staticmethod
+    def has_authentication():
+        """Whether a usable password login or a saved social session exists."""
+        email, password = DataManager.get_credentials()
+        if email and password:
+            return True
+        data = DataManager.load_json(DATA_FILE)
+        if data.get("auth_method") != "social":
+            return False
+        session = DataManager.load_session()
+        return bool(session.get("cookies") and session.get("csrf"))
+
+    @staticmethod
     def set_credentials(email, password):
         DataManager.save_json(DATA_FILE, {"email": email, "password": password})
 
@@ -85,7 +97,10 @@ class DataManager:
         email = DataManager.get_credentials()[0]
         if email and not DataManager.get_setting("account_email"):
             DataManager.set_setting("account_email", email)  # installs from before switch_account existed
-        DataManager.save_json(DATA_FILE, {"email": None, "password": None})
+        DataManager.save_json(
+            DATA_FILE,
+            {"email": None, "password": None, "auth_method": None, "auth_provider": None},
+        )
         if os.path.exists(SESSION_FILE):
             try:
                 os.remove(SESSION_FILE)
