@@ -234,6 +234,16 @@ textarea.input { resize: vertical; min-height: 110px; font: inherit; color: inhe
 .card.locked .lock-ic { font-size: 30px; margin-bottom: 6px; opacity: .8; }
 .ok-line { color: #9ff0cb; font-size: 13px; }
 .wizard.narrow { width: min(460px, calc(100vw - 48px)); }
+.social-login-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 10px; }
+.social-btn { width: 100%; min-width: 0; justify-content: flex-start; padding: 9px 10px; text-align: left; }
+.social-mark { display: grid; place-items: center; width: 28px; height: 28px; flex: none; border-radius: 8px; color: #fff; font-size: 12px; font-weight: 800; }
+.social-mark.vk { background: #0077ff; }
+.social-mark.discord { background: #5865f2; }
+.social-mark.yandex { background: #fc3f1d; }
+.social-mark.google { color: #4285f4; background: #fff; font-size: 16px; }
+.social-hint { margin: 0 0 13px; line-height: 1.45; }
+.auth-divider { display: flex; align-items: center; gap: 12px; margin: 8px 0 14px; color: var(--faint); font-size: 12px; }
+.auth-divider::before, .auth-divider::after { content: ""; height: 1px; flex: 1; background: var(--border-strong); }
 .check { display: flex; align-items: center; gap: 9px; font-size: 13.5px; margin-top: 14px; cursor: pointer; user-select: none; }
 .check input { width: 16px; height: 16px; accent-color: #b45cff; margin: 0; }
 .seg { display: inline-flex; flex: none; padding: 3px; border-radius: 11px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); }
@@ -641,7 +651,15 @@ textarea.input { resize: vertical; min-height: 110px; font: inherit; color: inhe
 
       <div class="wiz-step" data-step="1">
         <h2>Вход в MangaBuff</h2>
-        <p class="lead">Почта и пароль от сайта. Они хранятся только на этом компьютере.</p>
+        <p class="lead">Войди через соцсеть или используй почту и пароль от сайта.</p>
+        <div class="social-login-grid">
+          <button class="btn social-btn" type="button" data-social-login="vkid"><span class="social-mark vk">VK</span><span>ВКонтакте</span></button>
+          <button class="btn social-btn" type="button" data-social-login="discord"><span class="social-mark discord">D</span><span>Discord</span></button>
+          <button class="btn social-btn" type="button" data-social-login="yandex"><span class="social-mark yandex">Я</span><span>Яндекс</span></button>
+          <button class="btn social-btn" type="button" data-social-login="google"><span class="social-mark google">G</span><span>Google</span></button>
+        </div>
+        <p class="hint social-hint">Откроется окно MangaBuff. 2R2R сохранит только сессию сайта, чтобы бот мог работать после входа.</p>
+        <div class="auth-divider"><span>или по почте</span></div>
         <div class="field">
           <label for="w-email">Почта</label>
           <input class="input" id="w-email" type="email" placeholder="you@example.com" autocomplete="off" spellcheck="false">
@@ -1293,6 +1311,55 @@ $$("[data-next]").forEach((b) => b.addEventListener("click", () => wizard.show(w
 $$("[data-back]").forEach((b) => b.addEventListener("click", () => wizard.show(wizard.step - 1)));
 $$("[data-skip]").forEach((b) => b.addEventListener("click", () => wizard.show(wizard.step + 1)));
 
+let socialLoginPolling = false;
+const socialLoginButtons = $("[data-social-login]");
+
+async function doSocialLogin(provider) {
+  if (socialLoginPolling) return;
+  const msg = $("#w-login-msg");
+  let result;
+  try { result = await api.start_social_login(provider); }
+  catch (e) { setMsg(msg, "Не удалось открыть окно входа MangaBuff.", false); return; }
+  if (!result || !result.ok) {
+    setMsg(msg, result?.error || "Не удалось начать авторизацию.", false);
+    return;
+  }
+
+  socialLoginPolling = true;
+  socialLoginButtons.forEach((button) => { button.disabled = true; });
+  setMsg(msg, result.message || "Заверши вход в открывшемся окне MangaBuff…", true);
+
+  const poll = async () => {
+    if (!socialLoginPolling) return;
+    let state;
+    try { state = await api.get_social_login_state(); }
+    catch (e) { setTimeout(poll, 1200); return; }
+
+    if (state.state === "success") {
+      socialLoginPolling = false;
+      socialLoginButtons.forEach((button) => { button.disabled = false; });
+      $("#w-email").value = "";
+      $("#w-pass").value = "";
+      await refreshBoot();
+      setMsg(msg, state.message || "Вход выполнен.", true);
+      wizard.show(2);
+      return;
+    }
+    if (state.state === "error" || state.state === "cancelled") {
+      socialLoginPolling = false;
+      socialLoginButtons.forEach((button) => { button.disabled = false; });
+      setMsg(msg, state.message || "Авторизация не завершена.", false);
+      return;
+    }
+    setTimeout(poll, 1200);
+  };
+  poll();
+}
+
+socialLoginButtons.forEach((button) => {
+  button.addEventListener("click", () => doSocialLogin(button.dataset.socialLogin));
+});
+
 async function doLogin() {
   const btn = $("#w-login");
   await busy(btn, async () => {
@@ -1359,7 +1426,7 @@ async function refreshBoot() {
   renderModules();
   await refreshBoot();
   if (!boot.onboarded) wizard.open(boot.has_credentials ? 2 : 0);
-  if (boot.email) $("#w-email").value = boot.email;
+  if (boot.email && boot.auth_method !== "social") $("#w-email").value = boot.email;
 
   const loop = async (fn, ms) => { try { await fn(); } catch (e) { /* backend busy */ } setTimeout(() => loop(fn, ms), ms); };
   loop(async () => renderState(await api.get_state()), 2000);
