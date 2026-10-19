@@ -2,7 +2,7 @@
 ; Build: ISCC /DAppVersion=11.0.0 /DDistDir=<folder with 2R2R.exe> installer\buffy.iss
 
 #ifndef AppVersion
-  #define AppVersion "11.0.10"
+  #define AppVersion "11.0.11"
 #endif
 #ifndef DistDir
   #define DistDir "..\dist\2R2R"
@@ -60,4 +60,4 @@ Filename: "{app}\2R2R.exe"; Description: "{cm:LaunchProgram,2R2R}"; Flags: nowai
 Filename: "{app}\2R2R.exe"; Flags: nowait; Check: WizardSilent
 
 [UninstallRun]
-Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM 2R2R.exe"; Flags: runhidden; RunOnceId: "StopBuffy"
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM 2R2R.exe"; Flags: runhidden; RunOnceId: "Stop2R2R"

@@ -596,7 +596,7 @@ def build_issue_url(description, raw_lines, secrets=(), status=""):
     title = desc.splitlines()[0][:80]
     head = (
         f"**Что случилось**\n{desc}\n\n"
-        f"**Система**\nBuffy {__version__} · {platform.platform()} · "
+        f"**Система**\n2R2R {__version__} · {platform.platform()} · "
         f"{'exe' if IS_FROZEN else 'python'} · бот: {status}\n\n"
         "<details><summary>Журнал (заполнен автоматически)</summary>\n\n```\n"
     )

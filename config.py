@@ -11,9 +11,9 @@ def get_base_path():
 
     Script runs (VPS/systemd) keep everything next to the code. The packaged
     desktop app runs from a temp extraction dir, so it stores data in
-    %APPDATA%\\Buffy instead (override with BUFFY_HOME).
+    %APPDATA%\\2R2R instead (override with 2R2R_HOME; BUFFY_HOME remains supported for compatibility).
     """
-    override = os.getenv("BUFFY_HOME")
+    override = os.getenv("2R2R_HOME") or os.getenv("BUFFY_HOME")
     if override:
         return override
     if IS_FROZEN:
