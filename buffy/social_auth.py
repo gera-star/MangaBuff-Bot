@@ -76,6 +76,16 @@ def mangabuff_cookie_values(raw_cookies) -> dict[str, str]:
             # A name -> value mapping is already scoped by the caller to the
             # currently loaded MangaBuff page.
             items = [raw_cookies]
+    elif hasattr(raw_cookies, "items"):
+        # http.cookies.SimpleCookie is iterable over names, but its items()
+        # exposes the Morsel values and their domain attributes.
+        try:
+            items = [{"name": name, "value": value, "domain": ""} for name, value in raw_cookies.items()]
+        except Exception:
+            try:
+                items = list(raw_cookies)
+            except TypeError:
+                items = [raw_cookies]
     else:
         try:
             items = list(raw_cookies)
