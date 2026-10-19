@@ -646,7 +646,7 @@ class BuffyApi:
         token = (token or "").strip()
         chat_id = (chat_id or "").strip()
         if not token or not chat_id:
-            return {"ok": False, "error": "Нужны токен бота и Chat ID"}
+            return {"ok": False, "error": "Укажи токен бота и номер чата"}
         try:
             r = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
@@ -673,7 +673,7 @@ class BuffyApi:
                 chat = (upd.get("message") or {}).get("chat") or {}
                 if chat.get("id"):
                     return {"ok": True, "chat_id": str(chat["id"])}
-            return {"ok": False, "error": "Напиши своему боту любое сообщение и нажми ещё раз"}
+            return {"ok": False, "error": "Напиши своему боту сообщение в Telegram, затем нажми «Найти номер чата»"}
         except Exception as e:
             return {"ok": False, "error": "Нет связи с Telegram. Проверь интернет и попробуй ещё раз."}
 
@@ -772,7 +772,7 @@ def _tg_error(description):
     if "unauthorized" in text or "not found" in text and "chat" not in text:
         return "Токен не подошёл. Скопируй его из @BotFather ещё раз целиком."
     if "chat not found" in text:
-        return "Чат не найден. Напиши своему боту любое сообщение и нажми «Найти Chat ID»."
+        return "Чат не найден. Напиши своему боту любое сообщение и нажми «Найти номер чата»."
     if "blocked" in text:
         return "Бот заблокирован в Telegram. Разблокируй его и попробуй снова."
     if "too many requests" in text:
