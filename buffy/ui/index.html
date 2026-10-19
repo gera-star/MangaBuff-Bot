@@ -481,21 +481,21 @@ textarea.input { resize: vertical; min-height: 110px; font: inherit; color: inhe
         <div class="grid two">
           <div class="card">
             <h3>Подключение</h3>
-            <p class="lead">2R2R пришлёт дропы карт, обмены, повышение ранга и предупредит, если что-то сломалось.</p>
+            <p class="lead">2R2R сообщит о новых картах, обменах и повышении ранга, а также предупредит о неполадках.</p>
             <ol class="steps">
               <li><span>Открой <a data-url="https://t.me/BotFather">@BotFather</a>, отправь <span class="mono">/newbot</span> и скопируй токен.</span></li>
               <li><span>Напиши своему новому боту любое сообщение.</span></li>
-              <li><span>Вставь токен ниже и нажми «Найти Chat ID».</span></li>
+              <li><span>Вставь токен ниже и нажми «Найти номер чата».</span></li>
             </ol>
             <div class="field">
-              <label for="tg-token">Токен бота</label>
+              <label for="tg-token">Токен — секретный код бота</label>
               <input class="input mono" id="tg-token" type="password" placeholder="123456789:AA..." spellcheck="false" autocomplete="off">
             </div>
             <div class="field">
-              <label for="tg-chat">Chat ID</label>
+              <label for="tg-chat">Номер чата в Telegram</label>
               <div class="row">
                 <input class="input mono" id="tg-chat" placeholder="например 713822262" spellcheck="false">
-                <button class="btn" id="tg-find">Найти Chat ID</button>
+                <button class="btn" id="tg-find">Найти номер чата</button>
               </div>
             </div>
             <div class="row">
@@ -536,7 +536,7 @@ textarea.input { resize: vertical; min-height: 110px; font: inherit; color: inhe
           <h3>Прокси</h3>
           <p class="lead">Обычно не нужен. Пригодится, если сайт не открывается или защита DDoS-Guard часто ставит паузы.</p>
           <div class="field">
-            <label for="proxy">Адрес прокси</label>
+            <label for="proxy">Прокси-сервер (если сайт не открывается напрямую)</label>
             <div class="row">
               <input class="input mono" id="proxy" placeholder="ip:port:user:pass или http://user:pass@ip:port" spellcheck="false">
               <button class="btn" id="proxy-test">Проверить</button>
@@ -720,7 +720,7 @@ textarea.input { resize: vertical; min-height: 110px; font: inherit; color: inhe
           <li><span>Напиши своему боту любое сообщение.</span></li>
         </ol>
         <div class="field">
-          <label for="w-token">Токен бота</label>
+          <label for="w-token">Токен — секретный код бота</label>
           <input class="input mono" id="w-token" type="password" placeholder="123456789:AA..." spellcheck="false" autocomplete="off">
         </div>
         <div class="msg" id="w-tg-msg"></div>
@@ -757,7 +757,7 @@ const TG_HINT = " Подключи Telegram — и такие сообщения
 const MODULES = [
   { key: null, run: "daily", emoji: "📅", title: "Ежедневные награды",
     text: "Отмечает визит, забирает награду дня и награды за выполненные задания.",
-    more: "Каждый день 2R2R заходит на сайт, чтобы не прерывалась серия «Дней подряд», забирает награду из календаря и награды за выполненные задания. Календарь наград сайт открывает не всем: нужен PRO, донат от 300 ₽ или аккаунт старше 3 месяцев с рейтингом от 300. Пока его нет, 2R2R просто пропускает этот шаг. Ничего не тратит, поэтому модуль всегда включён." },
+    more: "Каждый день 2R2R заходит на сайт, чтобы не прерывалась серия «Дней подряд», забирает награду из календаря и награды за выполненные задания. Календарь наград сайт открывает не всем: нужна подписка PRO, пополнение счёта от 300 ₽ или аккаунт старше 3 месяцев с рейтингом от 300. Пока его нет, 2R2R просто пропускает этот шаг. Ничего не тратит, поэтому модуль всегда включён." },
   { key: null, run: "mining", emoji: "⛏️", title: "Шахта",
     text: "Тратит дневную энергию шахты на добычу руды.",
     more: "Энергия шахты появляется раз в день — после полуночи по Москве. 2R2R тратит её целиком на добычу руды. Руда нужна для улучшения кирки и считается в капитал: 100 руды ≈ 1 💎. Если энергия уже потрачена, ручной запуск просто покажет, что копать нечего." },
@@ -956,7 +956,7 @@ $("#run-btn").addEventListener("click", async () => {
     const r = await api.start();
     if (!r.ok) { toast(r.error || "Не получилось запустить", "err"); return; }
     renderStatus("starting");
-    toast("2R2R вышел на смену", "ok");
+    toast("2R2R запущен", "ok");
   }
 });
 
@@ -979,7 +979,7 @@ function renderState(st) {
   $("#cards-bar").style.width = pct(c.found, c.max) + "%";
   $("#cards-s").textContent = (st.setup || {}).bonus_cards_off ? "Сайт пока не выдаёт карты этому аккаунту"
     : c.found >= c.max ? "Все карты на сегодня собраны 🎉"
-    : c.ready ? "Карта готова к дропу" : c.cooldown ? `Следующая через ${c.cooldown}` : "Карты за чтение глав";
+    : c.ready ? "Карта готова к выпадению" : c.cooldown ? `Следующая через ${c.cooldown}` : "Карты за чтение глав";
 
   $("#ch-v").innerHTML = ch.read == null ? "—" : `${ch.read}<small> / ${ch.max}</small>`;
   $("#ch-bar").style.width = pct(ch.read, ch.max) + "%";
@@ -1194,7 +1194,7 @@ function renderTg() {
 /* Telegram page */
 $("#tg-find").addEventListener("click", (e) => busy(e.currentTarget, async () => {
   const r = await api.find_chat_id($("#tg-token").value);
-  if (r.ok) { $("#tg-chat").value = r.chat_id; setMsg($("#tg-msg"), "Chat ID найден", true); }
+  if (r.ok) { $("#tg-chat").value = r.chat_id; setMsg($("#tg-msg"), "номер чата найден", true); }
   else setMsg($("#tg-msg"), r.error, false);
 }));
 $("#tg-save").addEventListener("click", (e) => busy(e.currentTarget, async () => {
@@ -1261,7 +1261,7 @@ $("#rep-send").addEventListener("click", async () => {
   await api.report_problem(text);
   $("#report").classList.remove("show");
   $("#rep-text").value = "";
-  toast("Открыл GitHub — проверь текст и нажми «Create»", "ok");
+  toast("Открыл GitHub. Проверь описание и нажми «Создать»", "ok");
 });
 
 /* Segmented choices (string settings) */
@@ -1435,7 +1435,7 @@ $("#w-finish").addEventListener("click", async () => {
   await refreshBoot();
   wizard.close();
   const r = await api.start();
-  if (r.ok) { renderStatus("starting"); toast("2R2R вышел на смену", "ok"); }
+  if (r.ok) { renderStatus("starting"); toast("2R2R запущен", "ok"); }
 });
 
 /* ------------------------------------------------------------- boot */
