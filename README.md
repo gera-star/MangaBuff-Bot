@@ -1,166 +1,118 @@
-[![ru](https://img.shields.io/badge/lang-ru-red.svg)](README.ru.md) [![en](https://img.shields.io/badge/lang-en-green.svg)](README.md)
+# 2R2R — программа для Windows для MangaBuff
 
-# 🤖 MangaBuff Miner Bot
+**2R2R** помогает выполнять повторяющиеся действия в игре MangaBuff автоматически. Программа работает на компьютере под Windows, показывает состояние задач и записывает результаты в журнал. Окно можно свернуть к часам Windows и оставить программу работать в фоне.
 
-**MangaBuff Miner** is a high-performance, fully autonomous automation daemon and desktop client for the MangaBuff mining game, card collection, and battle systems. Powered by direct HTTP API interaction (no browser overhead), it features advanced combat heuristics, automatic card progression, resilient network sessions, and rich Telegram notifications.
+## Скачать и запустить
 
-![Status](https://img.shields.io/badge/Status-Active%20Production-brightgreen)
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
-![Mode](https://img.shields.io/badge/Mode-CLI%20%7C%20Desktop%20App%20%7C%2024%2F7%20Daemon-orange)
+1. Откройте [страницу последних выпусков 2R2R](https://github.com/gera-star/MangaBuff-Bot/releases/latest).
+2. Скачайте установщик **2R2R-Setup.exe** и запустите его. Если на странице доступен ZIP-архив, его можно использовать как переносную версию.
+3. Откройте 2R2R и войдите в аккаунт MangaBuff. На экране входа доступны ВКонтакте, Discord, Яндекс, Google, а также вход по почте и паролю.
+4. Перейдите в раздел **«Модули»** и включите задачи, которые хотите использовать.
+5. Нажмите **«Запустить»**. На главной странице появятся текущее состояние, ближайшее действие и игровая статистика.
 
----
+При первом запуске Windows может предупредить, что приложение неизвестно системе. Такое предупреждение может появляться, если у установщика нет цифровой подписи. Скачивайте программу только из официального репозитория 2R2R.
 
-## 💜 Buffy — desktop app for Windows
+## Что умеет программа
 
-Don't want to touch Python? Grab **Buffy-Setup.exe** (or the portable zip) from [Releases](https://github.com/Qu4dyz/MangaBuff-Miner-Bot/releases/latest), run it, and the first-launch wizard walks you through login, modules and Telegram. Buffy runs the same 24/7 daemon as the server version, shows live stats (cards, chapters, diamonds, tower, arena rank), keeps a full activity log, and hides to the system tray when closed. Settings live in `%APPDATA%\Buffy`.
+### ⚔️ Арена и бои
 
-> Windows may show "Windows protected your PC" for a new unsigned app — click **More info → Run anyway**.
+- Автоматически подбирает соперников и проводит доступные бои.
+- Оценивает силу карт, их характеристики, усиления и сочетания между собой.
+- Учитывает историю защиты и составы соперников при выборе цели.
+- Помогает развивать карты: выполняет доступные действия по пробуждению и подбору усилений.
+- Защищает ценные карты от случайного расходования там, где это предусмотрено логикой программы.
+- Может участвовать в Вечернем кубке в игровое время **19:00–22:00 по Москве**.
 
----
+### ⛏️ Шахта и ежедневные задания
 
-## ✨ Features
+- Добывает руду, когда доступна энергия шахты.
+- Покупает улучшения кирки и «Сильный удар», когда хватает руды.
+- Проверяет ежедневные подарки, награды и выполненные задания.
+- Отслеживает состояние аккаунта и основные игровые показатели.
 
-### ⚔️ Arena & Combat Intelligence (`arena.py`)
-* **Autonomous Arena Battles:** Automated matchmaking, target evaluation, and battle execution.
-* **Combat Effectiveness Engine:** Calculates true combat value of cards taking into account stats, buffs, card synergies, and win probabilities.
-* **Opponent Scouting & Optimization:** Analyzes defense logs and opponent compositions to select highest-yield, high-confidence targets.
-* **Card Progression & Protection Policy:**
-  * Automated card awakening and resonance matching.
-  * Intelligent lock system that prevents sacrificing or consuming valuable/legendary cards.
-* **Evening Cup Automation:** Automated participation in the Evening Cup (19:00–22:00 MSK) with dynamic turn strategy and tactic activation.
+### 📖 Чтение глав
 
-### 🏛️ Club System (`club.py`)
-* **Personal Crystal Contributions:** Automatically contributes crystals to the club (up to 10/10) to earn club exp and contribution points.
-* **Card Request Alerts:** Monitors club card donation requests and alerts you via Telegram with direct links and card art when requested cards are in your collection.
+- Открывает главы манги ради бонусных карт и свитков заточки.
+- Следит за ежедневным заданием на чтение **75 глав** и лимитом бонусных карт.
+- Запоминает прогресс в файле состояния, чтобы не выполнять лишние действия после достижения дневного лимита.
 
-### 🏰 Abyss Tower (Башня Разлома)
-* **Continuous Expedition Cycle:** Automatically claims expedition rewards (diamonds, dark crystals, card levels).
-* **Zero-Downtime Redeployment:** Instantly re-dispatches the squad on the optimal expedition immediately upon completion.
-* **HQ Upgrades:** Automatically invests earned resources into Tower Headquarters upgrades.
+### 📺 Реклама и награды
 
-### 📖 Manga Chapter Reading (`/addHistory`)
-* **Daily Bonus Card Farming:** Sequentially processes manga chapters with natural randomized delays (10–18s) to collect up to 10 daily bonus cards and sharpening scrolls.
-* **Daily Quest Integration:** Automatically completes the 75-chapter daily quest milestone.
-* **State Tracking:** Tracks read history in `reading_state.json` and avoids wasteful requests once daily card drops are exhausted.
+- Может просматривать до **трёх рекламных видео в день**.
+- Каждое засчитанное видео приносит **7 алмазов**, то есть максимум **21 алмаз в день** за три просмотра.
+- Проверяет доступные награды и забирает их, когда сайт разрешает это сделать.
 
-### ⛏️ Mining, Quests & Daily Routine
-* **Ore Mining & Auto-Upgrades:** Sends mining hits (`/mine/hit`), purchases pickaxe upgrades and Strong Hit as soon as sufficient ore is collected.
-* **Daily Rewarded Ads (3x7 💎):** Watches all 3 daily ads via `POST /balance/ads` (+21 diamonds daily) with humanized watch durations.
-* **Daily Rewards & Quests:** Scans and claims daily login gifts, chest rewards, and completed battle quests.
+Фактическое получение наград зависит от доступности MangaBuff, настроек программы и состояния игрового аккаунта. Программа не может гарантировать, что каждое действие будет успешно завершено.
 
-### 🛡️ Network Robustness & Session Persistence
-* **Resilient HTTP Layer (`http_session.py`):** Hybrid session engine supporting `curl_cffi` browser TLS impersonation with fallback to standard `requests`.
-* **DDoS-Guard / Cloudflare Handling:** Auto-recovers cookies, deduplicates DDoS-Guard session tokens, and keeps valid session credentials in `session_cache.json`.
-* **Anti-Ban Humanization:** Randomized timing jitters, micro-breaks between battles, and realistic user simulation.
+### 🏰 Башня Разлома
 
-### 📲 Smart Telegram Notifier (`tg_notifier.py`)
-* **Visual Card Art Drops:** Sends card drop notifications with actual image attachments (WebP, PNG, GIF detection via magic bytes).
-* **Trade Alerts:** Instant trade notifications with direct action links.
-* **Quiet Hours & Alert Escalation:** Configurable night mode with forced loud alerts if manual captcha intervention is needed.
-* **Cycle Heartbeats:** Compact periodic status summaries reporting energy, diamonds, card counts, and upcoming actions.
+- Забирает доступные награды завершённых экспедиций.
+- Отправляет отряд в следующий поход, когда для этого есть подходящий вариант.
+- Может вкладывать заработанные ресурсы в улучшения Штаба Башни.
 
----
+Перед первым использованием проверьте на сайте, что для Башни выбран отряд.
 
-## 🕹️ Modes of Operation
+### 💜 Клуб и события
 
-| Mode | Command | Description |
-|------|---------|-------------|
-| **Smart Daemon (24/7)** | `python main.py --daemon` | Headless, continuous 24/7 daemon designed for VPS/servers. Automatically calculates sleep intervals until the earliest pending event (tower return, chest unlock, energy refill, midnight reset). |
-| **Standard CLI** | `python main.py` | Runs a complete farm and maintenance cycle once, outputs status, and exits cleanly. |
-| **Status Check** | `python main.py --status` | Fast, read-only health check of current energy, balance, and account state without performing actions. |
-| **Buffy desktop app** | `python main.py --app` | Windows app with onboarding wizard, live dashboard, module toggles, Telegram setup, tray icon and autostart. Requires `requirements-desktop.txt`. |
+- Может вносить кристаллы в клуб в пределах доступного дневного лимита.
+- Сообщает через Telegram, если клубу нужна карта, которая есть в вашей коллекции.
+- Следит за поддерживаемыми сезонными событиями.
 
----
+### 🔔 Уведомления в Telegram (необязательно)
 
-## 🚀 Quick Start
+Telegram нужен только для уведомлений на телефон. Без него основные функции 2R2R продолжают работать, а результаты видны в разделе **«Журнал»**.
 
-### 1. Requirements
-* Python 3.10 or higher
-* Git
+1. Откройте [@BotFather](https://t.me/BotFather) в Telegram и отправьте команду `/newbot`.
+2. Следуйте инструкциям и скопируйте выданный **токен** — секретный код доступа к вашему боту. Не публикуйте его и не отправляйте посторонним.
+3. Напишите созданному боту любое сообщение.
+4. В 2R2R откройте раздел **«Telegram»**, вставьте токен и нажмите **«Найти номер чата»**.
+5. Сохраните настройки и проверьте соединение.
 
-### 2. Installation
-```bash
-git clone https://github.com/Qu4dyz/MangaBuff-Miner-Bot.git
-cd MangaBuff-Miner-Bot
+Уведомления могут сообщать о новых картах, предложениях обмена, изменении ранга и неполадках. В настройках можно выбрать ночной режим и отключение звука.
+
+## Разделы программы
+
+- **Главная** — что программа делает сейчас, что будет дальше и как меняются игровые показатели.
+- **Модули** — список автоматических задач. Здесь можно включать и отключать доступные функции.
+- **Telegram** — подключение уведомлений и настройка ночного или беззвучного режима.
+- **Сеть** — состояние соединения и настройка прокси-сервера. Обычно прокси не нужен.
+- **Журнал** — история действий, предупреждений и ошибок. Если что-то работает не так, загляните сюда.
+- **Настройки** — запуск вместе с Windows, автозапуск бота, обновления и поведение при закрытии окна.
+
+Если нажать крестик окна, программа может предложить свернуть её к часам Windows или полностью завершить работу. Этот вариант можно изменить в настройках. Если включён запуск вместе с Windows, 2R2R может запускаться свёрнутой.
+
+## Если что-то не работает
+
+1. Проверьте, открывается ли [MangaBuff](https://mangabuff.ru) в обычном браузере.
+2. Убедитесь, что сайт не просит снова войти в аккаунт.
+3. Откройте раздел **«Журнал»** и посмотрите последние сообщения.
+4. Если сайт не открывается напрямую, проверьте интернет-соединение. Настраивать прокси стоит только при необходимости.
+5. Нажмите **«Сообщить о проблеме»**, проверьте подготовленный текст и только после этого отправляйте его.
+
+Настройки, данные входа и состояние работы хранятся в папке `%APPDATA%\2R2R`. Не передавайте другим людям содержимое этой папки: там могут находиться данные вашей сессии.
+
+## Простыми словами
+
+- **Модуль** — отдельная задача, например чтение глав или бои на арене.
+- **Область уведомлений** — правая часть панели задач Windows рядом с часами; там находится значок свёрнутой программы.
+- **Прокси-сервер** — промежуточное соединение с сайтом. Обычному пользователю чаще всего он не нужен.
+- **Токен Telegram** — секретный код, с помощью которого программа отправляет сообщения через созданного вами бота.
+- **Сессия** — сохранённый вход в MangaBuff, чтобы не вводить пароль при каждом действии.
+
+## Для разработчиков
+
+Обычным пользователям этот раздел не нужен: им достаточно скачать установщик. Для запуска из исходного кода требуется Python 3.10 или новее. В папке проекта откройте PowerShell и выполните:
+
+```powershell
 python -m venv venv
-# Linux / macOS:
-source venv/bin/activate
-# Windows:
 venv\Scripts\activate
-
 pip install -r requirements.txt
+pip install -r requirements-desktop.txt
+python main.py --app
 ```
 
-### 3. Configuration
-Create a `.env` file in the project root:
-```env
-# MangaBuff Credentials (optional if entered via GUI/CLI prompt)
-MB_EMAIL=your_email@example.com
-MB_PASSWORD=your_password
+Для запуска фонового режима без окна используется команда `python main.py --daemon`. Этот вариант предназначен для тех, кто самостоятельно настраивает запуск из исходного кода.
 
-# Telegram Notifications (optional but recommended)
-TG_TOKEN=your_bot_token
-TG_CHAT_ID=your_telegram_chat_id
-```
+## Важно
 
-### 4. Running as a Linux Systemd Service (VPS 24/7)
-To run the bot continuously in the background on a Linux VPS:
-```ini
-# /etc/systemd/system/mangabuff.service
-[Unit]
-Description=MangaBuff Miner Bot Smart Daemon
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root/mangabuff-bot
-ExecStart=/root/mangabuff-bot/venv/bin/python /root/mangabuff-bot/main.py --daemon
-Restart=always
-RestartSec=15
-
-[Install]
-WantedBy=multi-user.target
-```
-Enable and start the service:
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable mangabuff
-sudo systemctl start mangabuff
-```
-
----
-
-## 📁 Project Structure
-
-```
-├── main.py                     # Entry point (CLI, Daemon, desktop app flags)
-├── engine.py                   # MangaMinerBot core farm loop & lifecycle orchestration
-├── arena.py                    # Consolidated Arena subsystem (combat simulation, optimization, locks, Evening Cup)
-├── club.py                     # Club automation (crystal contributions, card donation alerts)
-├── http_session.py             # Robust curl_cffi/requests HTTP session layer
-├── tg_notifier.py              # Asynchronous Telegram notification engine
-├── buffy/                      # Buffy desktop app: pywebview window, web UI, tray, autostart
-├── config.py                   # Selectors, endpoints, and constants
-├── data_management.py          # Session and credential persistence
-├── utils.py                    # Safe cookie handling, parsing, and utilities
-├── languages.py                # Multi-language translations (EN / RU / UA)
-├── path.py                     # Base path resolution (script vs compiled exe)
-└── refresh_panel.py            # Headless panel stats refresher
-```
-
----
-
-## ⚙️ Dependencies
-
-* `requests` & `curl_cffi` — Resilient HTTP networking with TLS fingerprint impersonation
-* `beautifulsoup4` — HTML parsing and data extraction
-* `pywebview`, `pystray`, `pillow` — Buffy desktop app (`requirements-desktop.txt`, Windows only)
-* `python-dotenv` — Environment configuration
-* `packaging` & `urllib3` — Protocol support
-
----
-
-## 📄 Disclaimer
-
-*This project is developed for educational and personal use only. Use responsibly and in accordance with MangaBuff's Terms of Service.*
+2R2R предоставляется «как есть». Автоматизация может не соответствовать правилам MangaBuff. Пользуйтесь программой на свой риск и учитывайте правила самого сервиса.
