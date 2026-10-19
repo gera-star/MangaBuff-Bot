@@ -2,6 +2,7 @@ name: Build 2R2R
 
 on:
   push:
+    branches: [2r2r-desktop-rebrand]
     tags:
       - 'v*'
   workflow_dispatch:
