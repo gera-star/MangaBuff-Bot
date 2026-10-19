@@ -1,4 +1,4 @@
-name: Build Buffy
+name: Build 2R2R
 
 on:
   push:
@@ -45,7 +45,7 @@ jobs:
 
     # Nuitka compiles to C instead of bundling the interpreter, which antivirus
     # heuristics flag far less often than PyInstaller-style packers.
-    - name: Build Buffy (Nuitka)
+    - name: Build 2R2R (Nuitka)
       env:
         NUITKA_CACHE_DIR: ${{ runner.temp }}/nuitka-cache
       run: |
@@ -59,10 +59,10 @@ jobs:
           --include-package=clr_loader --include-package-data=clr_loader `
           --include-package=pythonnet --include-package-data=pythonnet `
           --nofollow-import-to=tkinter `
-          --company-name=Buffy --product-name=Buffy `
+          --company-name=2R2R --product-name=2R2R `
           --file-version=${{ steps.ver.outputs.version }} --product-version=${{ steps.ver.outputs.version }} `
-          --file-description="Buffy - MangaBuff autopilot" `
-          --output-filename=Buffy.exe --output-dir=build main.py
+          --file-description="2R2R - MangaBuff autopilot" `
+          --output-filename=2R2R.exe --output-dir=build main.py
 
     - name: Build Installer and Portable Zip
       run: |
@@ -74,22 +74,22 @@ jobs:
         $dist = (Resolve-Path build\main.dist).Path
         & $iscc /Q "/DDistDir=$dist" "/DAppVersion=${{ steps.ver.outputs.version }}" installer\buffy.iss
         if ($LASTEXITCODE -ne 0) { exit 1 }
-        Rename-Item build\main.dist Buffy
-        Compress-Archive -Path build\Buffy -DestinationPath "dist\Buffy-${{ steps.ver.outputs.version }}-portable.zip"
+        Rename-Item build\main.dist 2R2R
+        Compress-Archive -Path build\2R2R -DestinationPath "dist\2R2R-${{ steps.ver.outputs.version }}-portable.zip"
         Get-ChildItem dist
 
     - name: Upload Build
       uses: actions/upload-artifact@v4
       with:
-        name: Buffy-${{ steps.ver.outputs.version }}
+        name: 2R2R-${{ steps.ver.outputs.version }}
         path: dist/*
 
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
       uses: ncipollo/release-action@v1
       with:
-        artifacts: "dist/Buffy-Setup-*.exe,dist/Buffy-*-portable.zip"
-        name: "Buffy ${{ github.ref_name }}"
+        artifacts: "dist/2R2R-Setup-*.exe,dist/2R2R-*-portable.zip"
+        name: "2R2R ${{ github.ref_name }}"
         token: ${{ secrets.GITHUB_TOKEN }}
         allowUpdates: true
         generateReleaseNotes: true

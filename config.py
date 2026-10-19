@@ -18,7 +18,17 @@ def get_base_path():
         return override
     if IS_FROZEN:
         root = os.getenv("APPDATA") or os.path.expanduser("~")
-        return os.path.join(root, "Buffy")
+        target = os.path.join(root, "2R2R")
+        legacy = os.path.join(root, "Buffy")
+        # Preserve settings, credentials and progress from older installations.
+        if not os.path.exists(target) and os.path.isdir(legacy):
+            import shutil
+            try:
+                shutil.copytree(legacy, target)
+            except OSError:
+                # If migration cannot complete, keep using the existing working data.
+                return legacy
+        return target
     return os.path.dirname(os.path.abspath(__file__))
 
 

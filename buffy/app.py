@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Buffy desktop shell: web UI window, tray icon, single-instance guard."""
+"""2R2R desktop shell: web UI window, tray icon, single-instance guard."""
 from __future__ import annotations
 
 import os
@@ -40,13 +40,13 @@ def _single_instance():
             kernel32.CloseHandle(event)
         else:
             ctypes.windll.user32.MessageBoxW(
-                None, "Buffy уже запущен — ищи его иконку возле часов.", APP_NAME, 0x40
+                None, "2R2R уже запущен — ищи его иконку возле часов.", APP_NAME, 0x40
             )
     return not already
 
 
 def _listen_for_show(show):
-    """Bring the window back when another launch of Buffy signals it."""
+    """Bring the window back when another launch of 2R2R signals it."""
     if sys.platform != "win32":
         return
     import ctypes
@@ -75,7 +75,7 @@ class Tray:
         self._hint_shown = False
         image = Image.open(resource_path("buffy", "assets", "tray.png"))
         menu = pystray.Menu(
-            pystray.MenuItem("Открыть Buffy", lambda *_: show(), default=True),
+            pystray.MenuItem("Открыть 2R2R", lambda *_: show(), default=True),
             pystray.MenuItem(
                 lambda _: "Остановить бота" if api.is_running() else "Запустить бота",
                 lambda *_: self._toggle(),
@@ -110,7 +110,7 @@ class Tray:
             return
         self._hint_shown = True
         try:
-            self.icon.notify("Buffy работает в фоне. Открыть — двойной клик по иконке.", APP_NAME)
+            self.icon.notify("2R2R работает в фоне. Открыть — двойной клик по иконке.", APP_NAME)
         except Exception:
             pass
 

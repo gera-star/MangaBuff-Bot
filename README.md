@@ -1,8 +1,8 @@
-[![ru](https://img.shields.io/badge/lang-ru-red.svg)](README.ru.md) [![en](https://img.shields.io/badge/lang-en-green.svg)](README.md)
+[![ru](https://img.shields.io/badge/lang-ru-green.svg)](README.ru.md)
 
-# 🤖 MangaBuff Miner Bot
+# 🤖 MangaBuff Майнер Бот
 
-**MangaBuff Miner** is a high-performance, fully autonomous automation daemon and desktop client for the MangaBuff mining game, card collection, and battle systems. Powered by direct HTTP API interaction (no browser overhead), it features advanced combat heuristics, automatic card progression, resilient network sessions, and rich Telegram notifications.
+**MangaBuff Miner** — это высокопроизводительный автономный демон и десктопный клиент для автоматизации майнинга, сбора карт и боевых систем платформы MangaBuff. Бот работает через прямое взаимодействие с HTTP API (без накладных расходов браузера), оснащён продвинутой эвристикой боёв, автоматическим развитием карт, отказоустойчивыми сетевыми сессиями и информативными Telegram-уведомлениями.
 
 ![Status](https://img.shields.io/badge/Status-Active%20Production-brightgreen)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
@@ -10,78 +10,78 @@
 
 ---
 
-## 💜 Buffy — desktop app for Windows
+## 💜 2R2R — приложение для Windows
 
-Don't want to touch Python? Grab **Buffy-Setup.exe** (or the portable zip) from [Releases](https://github.com/Qu4dyz/MangaBuff-Miner-Bot/releases/latest), run it, and the first-launch wizard walks you through login, modules and Telegram. Buffy runs the same 24/7 daemon as the server version, shows live stats (cards, chapters, diamonds, tower, arena rank), keeps a full activity log, and hides to the system tray when closed. Settings live in `%APPDATA%\Buffy`.
+Не хочется возиться с Python? Скачай **2R2R-Setup.exe** (или портативный zip) из [релизов](https://github.com/gera-star/MangaBuff-Bot/releases/latest) и запусти: мастер первого запуска поможет войти, выбрать модули и подключить Telegram. 2R2R запускает тот же круглосуточный демон, что и серверная версия, показывает статистику в реальном времени (карты, главы, алмазы, башня, ранг арены), ведёт журнал действий и сворачивается в трей. Настройки хранятся в `%APPDATA%\2R2R`.
 
-> Windows may show "Windows protected your PC" for a new unsigned app — click **More info → Run anyway**.
-
----
-
-## ✨ Features
-
-### ⚔️ Arena & Combat Intelligence (`arena.py`)
-* **Autonomous Arena Battles:** Automated matchmaking, target evaluation, and battle execution.
-* **Combat Effectiveness Engine:** Calculates true combat value of cards taking into account stats, buffs, card synergies, and win probabilities.
-* **Opponent Scouting & Optimization:** Analyzes defense logs and opponent compositions to select highest-yield, high-confidence targets.
-* **Card Progression & Protection Policy:**
-  * Automated card awakening and resonance matching.
-  * Intelligent lock system that prevents sacrificing or consuming valuable/legendary cards.
-* **Evening Cup Automation:** Automated participation in the Evening Cup (19:00–22:00 MSK) with dynamic turn strategy and tactic activation.
-
-### 🏛️ Club System (`club.py`)
-* **Personal Crystal Contributions:** Automatically contributes crystals to the club (up to 10/10) to earn club exp and contribution points.
-* **Card Request Alerts:** Monitors club card donation requests and alerts you via Telegram with direct links and card art when requested cards are in your collection.
-
-### 🏰 Abyss Tower (Башня Разлома)
-* **Continuous Expedition Cycle:** Automatically claims expedition rewards (diamonds, dark crystals, card levels).
-* **Zero-Downtime Redeployment:** Instantly re-dispatches the squad on the optimal expedition immediately upon completion.
-* **HQ Upgrades:** Automatically invests earned resources into Tower Headquarters upgrades.
-
-### 📖 Manga Chapter Reading (`/addHistory`)
-* **Daily Bonus Card Farming:** Sequentially processes manga chapters with natural randomized delays (10–18s) to collect up to 10 daily bonus cards and sharpening scrolls.
-* **Daily Quest Integration:** Automatically completes the 75-chapter daily quest milestone.
-* **State Tracking:** Tracks read history in `reading_state.json` and avoids wasteful requests once daily card drops are exhausted.
-
-### ⛏️ Mining, Quests & Daily Routine
-* **Ore Mining & Auto-Upgrades:** Sends mining hits (`/mine/hit`), purchases pickaxe upgrades and Strong Hit as soon as sufficient ore is collected.
-* **Daily Rewarded Ads (3x7 💎):** Watches all 3 daily ads via `POST /balance/ads` (+21 diamonds daily) with humanized watch durations.
-* **Daily Rewards & Quests:** Scans and claims daily login gifts, chest rewards, and completed battle quests.
-
-### 🛡️ Network Robustness & Session Persistence
-* **Resilient HTTP Layer (`http_session.py`):** Hybrid session engine supporting `curl_cffi` browser TLS impersonation with fallback to standard `requests`.
-* **DDoS-Guard / Cloudflare Handling:** Auto-recovers cookies, deduplicates DDoS-Guard session tokens, and keeps valid session credentials in `session_cache.json`.
-* **Anti-Ban Humanization:** Randomized timing jitters, micro-breaks between battles, and realistic user simulation.
-
-### 📲 Smart Telegram Notifier (`tg_notifier.py`)
-* **Visual Card Art Drops:** Sends card drop notifications with actual image attachments (WebP, PNG, GIF detection via magic bytes).
-* **Trade Alerts:** Instant trade notifications with direct action links.
-* **Quiet Hours & Alert Escalation:** Configurable night mode with forced loud alerts if manual captcha intervention is needed.
-* **Cycle Heartbeats:** Compact periodic status summaries reporting energy, diamonds, card counts, and upcoming actions.
+> Windows может показать «Система Windows защитила ваш компьютер» для нового неподписанного приложения — нажми **Подробнее → Выполнить в любом случае**.
 
 ---
 
-## 🕹️ Modes of Operation
+## ✨ Возможности
 
-| Mode | Command | Description |
-|------|---------|-------------|
-| **Smart Daemon (24/7)** | `python main.py --daemon` | Headless, continuous 24/7 daemon designed for VPS/servers. Automatically calculates sleep intervals until the earliest pending event (tower return, chest unlock, energy refill, midnight reset). |
-| **Standard CLI** | `python main.py` | Runs a complete farm and maintenance cycle once, outputs status, and exits cleanly. |
-| **Status Check** | `python main.py --status` | Fast, read-only health check of current energy, balance, and account state without performing actions. |
-| **Buffy desktop app** | `python main.py --app` | Windows app with onboarding wizard, live dashboard, module toggles, Telegram setup, tray icon and autostart. Requires `requirements-desktop.txt`. |
+### ⚔️ Арена и Боевой Интеллект (`arena.py`)
+* **Автономные бои на Арене:** Автоматический подбор соперников, расчёт шансов на победу и проведение боёв.
+* **Модель боевой эффективности:** Оценивает реальную силу карт с учётом базовых статов, синергий, баффов и вероятности победы над оппонентом.
+* **Разведка и оптимизация целей:** Анализирует лог защиты и колоды противников, выбирая наиболее выгодные и надёжные цели.
+* **Прокачка и защита карт:**
+  * Автоматическое пробуждение (awakening) и подбор резонансов.
+  * Интеллектуальная система блокировки: защищает ценные и легендарные карты от случайного расхода или пожертвования.
+* **Автоматизация Вечернего кубка:** Участие в турнире кубка в активное окно (19:00–22:00 МСК) с динамической тактикой и адаптивным выбором целей.
+
+### 🏛️ Клубная Система (`club.py`)
+* **Персональные взносы кристаллов:** Автоматический ежедневный вклад кристаллов (до 10/10) для прокачки опыта и очков клуба.
+* **Оповещения о запросах карт:** Отслеживание запрошенных клубом карт и отправка Telegram-уведомлений со ссылкой и артом карты, если она есть в вашей коллекции.
+
+### 🏰 Башня Разлома (Abyss Tower)
+* **Непрерывный цикл экспедиций:** Автоматический сбор наград за завершённые походы (алмазы, тёмные кристаллы, опыт карт).
+* **Мгновенный перезапуск:** Сразу после завершения похода отряд отправляется в новую оптимальную экспедицию без простоев.
+* **Апгрейды штаба (HQ):** Автоматическое инвестирование ресурсов в улучшение штаба Башни.
+
+### 📖 Чтение глав манги (`/addHistory`)
+* **Фарм бонусных карт:** Последовательное чтение глав с естественными рандомизированными задержками (10–18с) для получения до 10 бонусных карт в день и свитков заточки.
+* **Дневные квесты:** Автоматическое закрытие этапа на 75 глав.
+* **Умное отслеживание:** Хранит прогресс в `reading_state.json` и не делает лишних запросов, когда суточный лимит карт уже собран.
+
+### ⛏️ Майнинг, Квесты и Ежедневные Задачи
+* **Добыча руды и авто-прокачка:** Регулярная отправка кликов майнинга (`/mine/hit`), своевременная покупка улучшений кирки и «Сильного удара».
+* **Просмотр рекламы (3x7 💎):** Просмотр всех 3 доступных видеороликов через `POST /balance/ads` (+21 алмаз ежедневно) с соблюдением интервалов.
+* **Ежедневные награды и квесты:** Автоматический сбор наград за вход, открытие боевых сундуков и закрытие квестов.
+
+### 🛡️ Сетевая Устойчивость и Сохранение Сессии
+* **Надёжный HTTP-слой (`http_session.py`):** Гибридный клиент с поддержкой имперсонации браузерных TLS-отпечатков через `curl_cffi` и резервным переключением на `requests`.
+* **Обход DDoS-Guard / Cloudflare:** Корректная обработка дублирующихся кук, сохранение сессии в `session_cache.json` и автоматическое восстановление при сбоях.
+* **Анти-бан гуманизация:** Реалистичные случайные задержки и микро-паузы между боями.
+
+### 📲 Умные Telegram-Уведомления (`tg_notifier.py`)
+* **Визуальные оповещения о картах:** Отправка изображений выпавших карт (авто-детект WebP, PNG, GIF по magic-байтам).
+* **Уведомления об обменах:** Мгновенные алерты с прямыми ссылками на подтверждение/просмотр трейда.
+* **Тихий режим и экстренные алерты:** Настройка ночных тихих часов с принудительным звуковым сигналом, если требуется ручное прохождение капчи.
+* **Пульс цикла (Heartbeat):** Компактные периодические сводки по энергии, алмазам, картам и следующим таймерам.
 
 ---
 
-## 🚀 Quick Start
+## 🕹️ Режимы Работы
 
-### 1. Requirements
-* Python 3.10 or higher
+| Режим | Команда | Описание |
+|-------|---------|----------|
+| **Smart Daemon (24/7)** | `python main.py --daemon` | Автономный фоновый режим для серверов/VPS. Рассчитывает время сна до ближайшего события (возврат из Башни, открытие сундука, восстановление энергии, полуночный сброс). |
+| **Стандартный CLI** | `python main.py` | Выполняет один полный цикл сбора и обслуживания, выводит статус и завершает работу. |
+| **Проверка статуса** | `python main.py --status` | Быстрая диагностика без совершения действий: показывает текущую энергию, баланс и состояние сессии. |
+| **Приложение 2R2R** | `python main.py --app` | Приложение для Windows: мастер первого запуска, живой дашборд, модули, настройка Telegram, трей и автозапуск. Нужен `requirements-desktop.txt`. |
+
+---
+
+## 🚀 Быстрый Старт
+
+### 1. Требования
+* Python 3.10 или новее
 * Git
 
-### 2. Installation
+### 2. Установка
 ```bash
-git clone https://github.com/Qu4dyz/MangaBuff-Miner-Bot.git
-cd MangaBuff-Miner-Bot
+git clone https://github.com/gera-star/MangaBuff-Bot.git
+cd MangaBuff-Bot
 python -m venv venv
 # Linux / macOS:
 source venv/bin/activate
@@ -91,20 +91,20 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 3. Configuration
-Create a `.env` file in the project root:
+### 3. Настройка
+Создайте файл `.env` в корневой папке проекта:
 ```env
-# MangaBuff Credentials (optional if entered via GUI/CLI prompt)
+# Данные аккаунта MangaBuff (опционально, можно ввести через интерфейс)
 MB_EMAIL=your_email@example.com
 MB_PASSWORD=your_password
 
-# Telegram Notifications (optional but recommended)
+# Уведомления Telegram (рекомендуется)
 TG_TOKEN=your_bot_token
 TG_CHAT_ID=your_telegram_chat_id
 ```
 
-### 4. Running as a Linux Systemd Service (VPS 24/7)
-To run the bot continuously in the background on a Linux VPS:
+### 4. Настройка как службы Linux Systemd (VPS 24/7)
+Для непрерывной фоновой работы на VPS создайте systemd-сервис:
 ```ini
 # /etc/systemd/system/mangabuff.service
 [Unit]
@@ -122,7 +122,7 @@ RestartSec=15
 [Install]
 WantedBy=multi-user.target
 ```
-Enable and start the service:
+Активируйте и запустите службу:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable mangabuff
@@ -131,36 +131,36 @@ sudo systemctl start mangabuff
 
 ---
 
-## 📁 Project Structure
+## 📁 Структура Проекта
 
 ```
-├── main.py                     # Entry point (CLI, Daemon, desktop app flags)
-├── engine.py                   # MangaMinerBot core farm loop & lifecycle orchestration
-├── arena.py                    # Consolidated Arena subsystem (combat simulation, optimization, locks, Evening Cup)
-├── club.py                     # Club automation (crystal contributions, card donation alerts)
-├── http_session.py             # Robust curl_cffi/requests HTTP session layer
-├── tg_notifier.py              # Asynchronous Telegram notification engine
-├── buffy/                      # Buffy desktop app: pywebview window, web UI, tray, autostart
-├── config.py                   # Selectors, endpoints, and constants
-├── data_management.py          # Session and credential persistence
-├── utils.py                    # Safe cookie handling, parsing, and utilities
-├── languages.py                # Multi-language translations (EN / RU / UA)
-├── path.py                     # Base path resolution (script vs compiled exe)
-└── refresh_panel.py            # Headless panel stats refresher
+├── main.py                     # Точка входа (флаги CLI, Daemon, приложение)
+├── engine.py                   # Ядро бота: координация циклов, майнинг, логика фермы
+├── arena.py                    # Консолидированная подсистема Арены (симуляция боя, оптимизация, локи, Вечерний кубок)
+├── club.py                     # Автоматизация клуба (вклады кристаллов, оповещения о запросах карт)
+├── http_session.py             # HTTP-слой на curl_cffi/requests с защитой от сбоев
+├── tg_notifier.py              # Асинхронный воркер Telegram-уведомлений
+├── buffy/                      # Приложение 2R2R: окно pywebview, веб-интерфейс, трей, автозапуск
+├── config.py                   # Селекторы, URL-адреса и конфигурация
+├── data_management.py          # Сохранение учетных данных и кэша сессий
+├── utils.py                    # Вспомогательные утилиты и работа с куками
+├── languages.py                # Локализация интерфейса (EN / RU / UA)
+├── path.py                     # Определение базового пути (скрипт vs скомпилированный exe)
+└── refresh_panel.py            # Обновление данных панели через CLI
 ```
 
 ---
 
-## ⚙️ Dependencies
+## ⚙️ Зависимости
 
-* `requests` & `curl_cffi` — Resilient HTTP networking with TLS fingerprint impersonation
-* `beautifulsoup4` — HTML parsing and data extraction
-* `pywebview`, `pystray`, `pillow` — Buffy desktop app (`requirements-desktop.txt`, Windows only)
-* `python-dotenv` — Environment configuration
-* `packaging` & `urllib3` — Protocol support
+* `requests` и `curl_cffi` — Сетевые запросы с обходом проверок и эмуляцией отпечатков браузера
+* `beautifulsoup4` — Парсинг HTML-страниц
+* `pywebview`, `pystray`, `pillow` — приложение 2R2R (`requirements-desktop.txt`, только Windows)
+* `python-dotenv` — Чтение переменных окружения
+* `packaging`, `urllib3` — Сетевая инфраструктура
 
 ---
 
-## 📄 Disclaimer
+## 📄 Отказ от Ответственности
 
-*This project is developed for educational and personal use only. Use responsibly and in accordance with MangaBuff's Terms of Service.*
+*Данный проект разработан исключительно в образовательных и личных целях. Используйте его на свой страх и риск, соблюдая правила использования сервиса MangaBuff.*

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Bridge between the Buffy web UI and the bot engine.
+"""Bridge between the 2R2R web UI and the bot engine.
 
 Every public method here is callable from JavaScript as
 ``window.pywebview.api.<name>(...)``; internals start with ``_`` so
@@ -437,7 +437,7 @@ class BuffyApi:
         try:
             r = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
-                data={"chat_id": chat_id, "text": "💜 Buffy на связи! Уведомления настроены."},
+                data={"chat_id": chat_id, "text": "💜 2R2R на связи! Уведомления настроены."},
                 timeout=10,
             )
             body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
@@ -605,7 +605,7 @@ def build_issue_url(description, raw_lines, secrets=(), status=""):
     base = REPO_URL + "/issues/new?"
     while True:
         body = head + "\n".join(lines) + tail
-        url = base + urlencode({"title": f"[Buffy] {title}", "body": body}, quote_via=quote)
+        url = base + urlencode({"title": f"[2R2R] {title}", "body": body}, quote_via=quote)
         if len(url) <= ISSUE_URL_LIMIT or not lines:
             return url
         lines = lines[max(1, len(lines) // 8):]  # drop the oldest lines first

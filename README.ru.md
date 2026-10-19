@@ -4,15 +4,15 @@
 
 **MangaBuff Miner** — это высокопроизводительный автономный демон и десктопный клиент для автоматизации майнинга, сбора карт и боевых систем платформы MangaBuff. Бот работает через прямое взаимодействие с HTTP API (без накладных расходов браузера), оснащён продвинутой эвристикой боёв, автоматическим развитием карт, отказоустойчивыми сетевыми сессиями и информативными Telegram-уведомлениями.
 
-![Status](https://img.shields.io/badge/Status-Active%20Production-brightgreen)
+![Статус](https://img.shields.io/badge/Статус-Активная%20разработка-brightgreen)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
-![Mode](https://img.shields.io/badge/Mode-CLI%20%7C%20Desktop%20App%20%7C%2024%2F7%20Daemon-orange)
+![Режимы](https://img.shields.io/badge/Режимы-Консоль%20%7C%20Windows%20%7C%2024%2F7-orange)
 
 ---
 
-## 💜 Buffy — приложение для Windows
+## 💜 2R2R — приложение для Windows
 
-Не хочется возиться с Python? Скачай **Buffy-Setup.exe** (или портативный zip) из [релизов](https://github.com/Qu4dyz/MangaBuff-Miner-Bot/releases/latest) и запусти: мастер первого запуска поможет войти, выбрать модули и подключить Telegram. Buffy запускает тот же круглосуточный демон, что и серверная версия, показывает статистику в реальном времени (карты, главы, алмазы, башня, ранг арены), ведёт журнал действий и сворачивается в трей. Настройки хранятся в `%APPDATA%\Buffy`.
+Не хочется возиться с Python? Скачай **2R2R-Setup.exe** (или портативный zip) из [релизов](https://github.com/gera-star/MangaBuff-Bot/releases/latest) и запусти: мастер первого запуска поможет войти, выбрать модули и подключить Telegram. 2R2R запускает тот же круглосуточный демон, что и серверная версия, показывает статистику в реальном времени (карты, главы, алмазы, башня, ранг арены), ведёт журнал действий и сворачивается в трей. Настройки хранятся в `%APPDATA%\2R2R`.
 
 > Windows может показать «Система Windows защитила ваш компьютер» для нового неподписанного приложения — нажми **Подробнее → Выполнить в любом случае**.
 
@@ -68,7 +68,7 @@
 | **Smart Daemon (24/7)** | `python main.py --daemon` | Автономный фоновый режим для серверов/VPS. Рассчитывает время сна до ближайшего события (возврат из Башни, открытие сундука, восстановление энергии, полуночный сброс). |
 | **Стандартный CLI** | `python main.py` | Выполняет один полный цикл сбора и обслуживания, выводит статус и завершает работу. |
 | **Проверка статуса** | `python main.py --status` | Быстрая диагностика без совершения действий: показывает текущую энергию, баланс и состояние сессии. |
-| **Приложение Buffy** | `python main.py --app` | Приложение для Windows: мастер первого запуска, живой дашборд, модули, настройка Telegram, трей и автозапуск. Нужен `requirements-desktop.txt`. |
+| **Приложение 2R2R** | `python main.py --app` | Приложение для Windows: мастер первого запуска, живой дашборд, модули, настройка Telegram, трей и автозапуск. Нужен `requirements-desktop.txt`. |
 
 ---
 
@@ -80,8 +80,8 @@
 
 ### 2. Установка
 ```bash
-git clone https://github.com/Qu4dyz/MangaBuff-Miner-Bot.git
-cd MangaBuff-Miner-Bot
+git clone https://github.com/gera-star/MangaBuff-Bot.git
+cd MangaBuff-Bot
 python -m venv venv
 # Linux / macOS:
 source venv/bin/activate
@@ -140,7 +140,7 @@ sudo systemctl start mangabuff
 ├── club.py                     # Автоматизация клуба (вклады кристаллов, оповещения о запросах карт)
 ├── http_session.py             # HTTP-слой на curl_cffi/requests с защитой от сбоев
 ├── tg_notifier.py              # Асинхронный воркер Telegram-уведомлений
-├── buffy/                      # Приложение Buffy: окно pywebview, веб-интерфейс, трей, автозапуск
+├── buffy/                      # Приложение 2R2R: окно pywebview, веб-интерфейс, трей, автозапуск
 ├── config.py                   # Селекторы, URL-адреса и конфигурация
 ├── data_management.py          # Сохранение учетных данных и кэша сессий
 ├── utils.py                    # Вспомогательные утилиты и работа с куками
@@ -155,7 +155,7 @@ sudo systemctl start mangabuff
 
 * `requests` и `curl_cffi` — Сетевые запросы с обходом проверок и эмуляцией отпечатков браузера
 * `beautifulsoup4` — Парсинг HTML-страниц
-* `pywebview`, `pystray`, `pillow` — приложение Buffy (`requirements-desktop.txt`, только Windows)
+* `pywebview`, `pystray`, `pillow` — приложение 2R2R (`requirements-desktop.txt`, только Windows)
 * `python-dotenv` — Чтение переменных окружения
 * `packaging`, `urllib3` — Сетевая инфраструктура
 
