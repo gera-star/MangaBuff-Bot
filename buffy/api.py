@@ -342,7 +342,8 @@ class BuffyApi:
                         status: response.status,
                         url: response.url,
                         csrf: doc.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
-                        loginPage: path.startsWith('/login') || !!doc.querySelector('form input[type="password"]')
+                        loginPage: path.startsWith('/login') || !!doc.querySelector('form input[type="password"]'),
+                        authenticated: !!doc.querySelector('.main-mine__game-hits-left')
                     };
                 } catch (error) {
                     return { status: 0, url: location.href, csrf: '', loginPage: true, error: String(error) };
@@ -358,6 +359,7 @@ class BuffyApi:
         if (
             status != 200
             or details.get("loginPage")
+            or not details.get("authenticated")
             or not is_mangabuff_url(details.get("url", ""))
             or not details.get("csrf")
         ):
