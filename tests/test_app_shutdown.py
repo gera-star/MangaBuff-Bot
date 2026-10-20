@@ -6,5 +6,6 @@ def test_full_exit_schedules_window_destruction_and_hard_exit_fallback():
     source = app_path.read_text(encoding="utf-8")
 
     assert "threading.Timer(0.2, destroy_window)" in source
-    assert "threading.Timer(10.0, force_exit)" in source
+    # Hard exit is a last-resort fallback; keep the delay short to avoid a stuck process.
+    assert "threading.Timer(4.0, force_exit)" in source
     assert 'if state["quitting"] or action == "quit":' in source
