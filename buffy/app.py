@@ -152,10 +152,36 @@ def run(start_minimized=False):
         window.restore()
 
     def quit_app():
+        if state["quitting"]:
+            return
         state["quitting"] = True
-        api.stop()
-        tray.stop()
-        window.destroy()
+        try:
+            api.stop()
+        except Exception:
+            pass
+        try:
+            tray.stop()
+        except Exception:
+            pass
+
+        # Ask pywebview to destroy the native window after the JS bridge call returns.
+        def destroy_window():
+            try:
+                window.destroy()
+            except Exception:
+                pass
+
+        destroy_timer = threading.Timer(0.2, destroy_window)
+        destroy_timer.daemon = True
+        destroy_timer.start()
+
+        # Last resort for a stuck WebView2/background worker: do not leave 2R2R.exe alive.
+        def force_exit():
+            os._exit(0)
+
+        exit_timer = threading.Timer(10.0, force_exit)
+        exit_timer.daemon = True
+        exit_timer.start()
 
     tray = Tray(api, show, quit_app)
     _listen_for_show(show)
@@ -173,8 +199,15 @@ def run(start_minimized=False):
     def on_closing():
         action = DataManager.get_setting("app_close_action", "ask")
         if state["quitting"] or action == "quit":
-            api.stop()
-            tray.stop()
+            state["quitting"] = True
+            try:
+                api.stop()
+            except Exception:
+                pass
+            try:
+                tray.stop()
+            except Exception:
+                pass
             return True
         if action == "tray":
             window.hide()

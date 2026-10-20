@@ -749,10 +749,17 @@ class BuffyApi:
         return True
 
     def quit_app(self):
-        """Exit completely: stop the bot, remove the tray icon, close the window."""
-        if self._quit:
-            threading.Thread(target=self._quit, daemon=True).start()
-        return True
+        """Exit completely: stop the bot, remove the tray icon, and close the window."""
+        if not self._quit:
+            return {"ok": False, "error": "Не удалось завершить работу 2R2R"}
+        try:
+            # pywebview calls exposed API methods on a worker thread; let the app
+            # schedule window destruction and a hard-exit fallback from this callback.
+            self._quit()
+            return True
+        except Exception as exc:
+            _file_log().exception("Не удалось закрыть окно 2R2R")
+            return {"ok": False, "error": str(exc)}
 
 
 def _halloween_state(today):
