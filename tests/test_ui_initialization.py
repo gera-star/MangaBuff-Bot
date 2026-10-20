@@ -6,7 +6,7 @@ def test_social_login_buttons_use_a_collection_and_do_not_abort_ui_boot():
     html_path = Path(__file__).resolve().parents[1] / "buffy" / "ui" / "index.html"
     source = html_path.read_text(encoding="utf-8")
 
-    assert 'const socialLoginButtons = $("[data-social-login]");' in source
+    assert 'const socialLoginButtons = $$("[data-social-login]");' in source
     assert 'if (!boot.has_credentials) wizard.open(1);' in source
     assert 'else if (!boot.onboarded) wizard.open(2);' in source
     assert 'socialLoginButtons.forEach((button) => {' in source
