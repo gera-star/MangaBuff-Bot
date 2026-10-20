@@ -1345,7 +1345,7 @@ $$("[data-back]").forEach((b) => b.addEventListener("click", () => wizard.show(w
 $$("[data-skip]").forEach((b) => b.addEventListener("click", () => wizard.show(wizard.step + 1)));
 
 let socialLoginPolling = false;
-const socialLoginButtons = $("[data-social-login]");
+const socialLoginButtons = $$("[data-social-login]");
 
 async function doSocialLogin(provider) {
   if (socialLoginPolling) return;
