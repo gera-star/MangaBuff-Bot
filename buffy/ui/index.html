@@ -602,7 +602,7 @@ textarea.input { resize: vertical; min-height: 110px; font: inherit; color: inhe
             <h3>Аккаунт MangaBuff</h3>
             <p class="lead" id="acc-lead">—</p>
             <div class="row" style="flex-wrap:wrap">
-              <button class="btn" id="acc-change">Сменить аккаунт</button>
+              <button class="btn primary" id="acc-change">＋ Добавить аккаунт</button>
               <button class="btn ghost" id="open-data">Папка с данными</button>
             </div>
             <div class="section-title" style="margin-top:22px">О программе</div>
@@ -1244,8 +1244,14 @@ $("#proxy-clear").addEventListener("click", async () => {
 /* Settings page */
 let boot = {};
 $("#acc-change").addEventListener("click", async () => {
-  if (!confirm("Выйти из аккаунта? Бот остановится, а 2R2R попросит войти заново.")) return;
-  await api.logout();
+  if (status === "running" || status === "starting" || status === "restarting" || status === "stopping" || manualBusy) {
+    toast("Сначала останови бота и дождись статуса «Остановлен», затем добавь аккаунт.", "err");
+    return;
+  }
+  // Keep the current login until the new login succeeds. Failed attempts must not log out the current account.
+  $("#w-email").value = "";
+  $("#w-pass").value = "";
+  setMsg($("#w-login-msg"), "Войди в другой аккаунт. Текущий вход сохранится, пока новый не будет успешным.", true);
   wizard.open(1);
 });
 $("#open-data").addEventListener("click", () => api.open_data_dir());
@@ -1286,9 +1292,34 @@ window.askClose = () => {
   $("#close-ask").classList.add("show");
 };
 async function closeAs(action) {
-  if ($("#close-remember").checked) { await api.set_setting("app_close_action", action); settings.app_close_action = action; bindChoices(); }
-  $("#close-ask").classList.remove("show");
-  if (action === "tray") await api.hide_window(); else await api.quit_app();
+  const closeButton = action === "quit" ? $("#close-quit") : $("#close-tray");
+  const originalLabel = closeButton.textContent;
+  closeButton.disabled = true;
+  closeButton.textContent = action === "quit" ? "Завершаю работу…" : "Сворачиваю…";
+  try {
+    if ($("#close-remember").checked) {
+      try {
+        await api.set_setting("app_close_action", action);
+        settings.app_close_action = action;
+        bindChoices();
+      } catch (e) {
+        console.warn("Не удалось сохранить выбор закрытия", e);
+      }
+    }
+    if (action === "tray") {
+      const result = await api.hide_window();
+      if (result === false || result?.ok === false) throw new Error(result?.error || "Не удалось свернуть окно");
+      $("#close-ask").classList.remove("show");
+    } else {
+      const result = await api.quit_app();
+      if (result === false || result?.ok === false) throw new Error(result?.error || "Не удалось завершить работу");
+      $("#close-ask").classList.remove("show");
+    }
+  } catch (e) {
+    closeButton.disabled = false;
+    closeButton.textContent = originalLabel;
+    toast("Не удалось выполнить команду: " + (e?.message || e), "err");
+  }
 }
 $("#close-tray").addEventListener("click", () => closeAs("tray"));
 $("#close-quit").addEventListener("click", () => closeAs("quit"));
