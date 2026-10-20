@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Bridge between the Buffy web UI and the bot engine.
+"""Bridge between the 2R2R web UI and the bot engine.
 
 Every public method here is callable from JavaScript as
 ``window.pywebview.api.<name>(...)``; internals start with ``_`` so
@@ -25,6 +25,7 @@ import requests
 
 from buffy import APP_NAME, REPO_URL, __version__
 from buffy.humanize import MODULES as MODULE_TITLES, humanize
+from buffy.social_auth import SOCIAL_PROVIDERS, is_mangabuff_url, mangabuff_cookie_values, social_login_url
 from data_management import DataManager
 from utils import normalize_proxy_url
 
@@ -99,6 +100,10 @@ class BuffyApi:
         self._on_hidden = None  # set by the app: tray hint after hiding
         self._manual_bot = None  # bot used for one-off runs while the daemon is stopped
         self._manual = {}  # module -> {"state", "summary", "at"}
+        self._social_login_lock = threading.RLock()
+        self._social_login_state = {"state": "idle", "provider": None, "message": ""}
+        self._social_login_window = None
+        self._social_login_worker = None
 
     # ------------------------------------------------------------------ logs
     def _log(self, message):
@@ -169,13 +174,17 @@ class BuffyApi:
     def get_bootstrap(self):
         email, password = DataManager.get_credentials()
         settings = self.get_settings()
+        has_auth = DataManager.has_authentication()
+        auth_method = DataManager.get_setting("auth_method") or ("password" if email and password else "")
         return {
             "app": APP_NAME,
             "version": __version__,
             "repo": REPO_URL,
             "email": email or "",
-            "has_credentials": bool(email and password),
-            "onboarded": bool(settings.get("app_onboarded")) and bool(email and password),
+            "auth_method": auth_method,
+            "auth_provider": DataManager.get_setting("auth_provider") or "",
+            "has_credentials": has_auth,
+            "onboarded": bool(settings.get("app_onboarded")) and has_auth,
             "settings": settings,
             "data_dir": os.path.dirname(_data_file()),
         }
@@ -183,6 +192,203 @@ class BuffyApi:
     def finish_onboarding(self):
         DataManager.set_setting("app_onboarded", True)
         return True
+
+    # -------------------------------------------------------- social sign-in
+    def start_social_login(self, provider):
+        """Open MangaBuff's own OAuth redirect in a dedicated embedded browser."""
+        provider = str(provider or "").strip().lower()
+        if provider not in SOCIAL_PROVIDERS:
+            return {"ok": False, "error": "Неизвестный способ входа"}
+        if self._status in ("running", "starting", "restarting", "stopping") or self._manual_bot is not None:
+            return {"ok": False, "error": "Сначала останови бота и дождись завершения ручного запуска"}
+
+        with self._social_login_lock:
+            if self._social_login_state.get("state") == "pending":
+                return {"ok": False, "error": "Окно авторизации уже открыто"}
+            self._social_login_state = {
+                "state": "pending",
+                "provider": provider,
+                "message": f"Войди через {SOCIAL_PROVIDERS[provider]} в открывшемся окне MangaBuff.",
+            }
+
+        try:
+            import webview
+
+            auth_window = webview.create_window(
+                f"Авторизация MangaBuff — {SOCIAL_PROVIDERS[provider]}",
+                url=social_login_url(provider),
+                width=900,
+                height=720,
+                min_size=(640, 480),
+                background_color="#ffffff",
+                text_select=True,
+            )
+            self._social_login_window = auth_window
+            try:
+                auth_window.events.closed += self._on_social_window_closed
+            except Exception:
+                pass
+            worker = threading.Thread(
+                target=self._watch_social_login,
+                args=(auth_window, provider),
+                name="2r2r-social-login",
+                daemon=True,
+            )
+            self._social_login_worker = worker
+            worker.start()
+            return {"ok": True, "message": "Войди в MangaBuff в открывшемся окне. После возврата в MangaBuff сессия сохранится автоматически."}
+        except Exception:
+            self._set_social_login_state(
+                "error", provider, "Не удалось открыть окно входа MangaBuff. Перезапусти приложение и попробуй ещё раз."
+            )
+            return {"ok": False, "error": "Не удалось открыть окно входа MangaBuff"}
+
+    def get_social_login_state(self):
+        with self._social_login_lock:
+            return dict(self._social_login_state)
+
+    def _set_social_login_state(self, state, provider=None, message=""):
+        with self._social_login_lock:
+            self._social_login_state = {
+                "state": state,
+                "provider": provider,
+                "message": message,
+            }
+
+    def _on_social_window_closed(self, *_):
+        with self._social_login_lock:
+            pending = self._social_login_state.get("state") == "pending"
+            provider = self._social_login_state.get("provider")
+        if pending:
+            self._set_social_login_state(
+                "error", provider, "Окно входа закрыто до завершения авторизации."
+            )
+
+    def _watch_social_login(self, auth_window, provider):
+        """Wait for the provider callback, then verify the browser's MangaBuff session."""
+        deadline = time.monotonic() + 300
+        next_probe_at = 0.0
+        probe_attempts = 0
+        while time.monotonic() < deadline:
+            with self._social_login_lock:
+                if self._social_login_state.get("state") != "pending":
+                    return
+            try:
+                current_url = auth_window.get_current_url() or ""
+            except Exception:
+                self._set_social_login_state(
+                    "error", provider, "Окно входа закрыто до завершения авторизации."
+                )
+                return
+
+            if is_mangabuff_url(current_url):
+                path = (urlsplit(current_url).path or "/").lower()
+                if not path.startswith("/login") and path not in ("/reg", "/register"):
+                    now = time.monotonic()
+                    if now >= next_probe_at:
+                        next_probe_at = now + 4
+                        probe_attempts += 1
+                        try:
+                            identity = self._capture_social_session(auth_window, provider)
+                        except Exception:
+                            identity = None
+                        if identity:
+                            self._set_social_login_state(
+                                "success", provider, f"Вход выполнен через {SOCIAL_PROVIDERS[provider]}."
+                            )
+                            self._log(f"✅ Вход в MangaBuff выполнен через {SOCIAL_PROVIDERS[provider]}")
+                            try:
+                                auth_window.destroy()
+                            except Exception:
+                                pass
+                            return
+                        # A few attempts accommodate the provider's final redirect without
+                        # hammering the site if the callback returned to a guest page.
+                        if probe_attempts >= 5:
+                            self._set_social_login_state(
+                                "error",
+                                provider,
+                                "MangaBuff не подтвердил вход. Проверь, что соцсеть вернула тебя на сайт, и попробуй ещё раз.",
+                            )
+                            try:
+                                auth_window.destroy()
+                            except Exception:
+                                pass
+                            return
+            time.sleep(1)
+
+        self._set_social_login_state(
+            "error", provider, "Время ожидания истекло. Войди через соцсеть ещё раз."
+        )
+        try:
+            auth_window.destroy()
+        except Exception:
+            pass
+
+    def _capture_social_session(self, auth_window, provider):
+        """Read back a confirmed logged-in page and persist only MangaBuff cookies."""
+        details = {}
+        details_ready = threading.Event()
+
+        def _on_details(result):
+            details["value"] = result
+            details_ready.set()
+
+        auth_window.evaluate_js(r"""
+            (async () => {
+                try {
+                    const response = await fetch('/mine', {
+                        credentials: 'include',
+                        cache: 'no-store',
+                        redirect: 'follow'
+                    });
+                    const html = await response.text();
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    const path = new URL(response.url).pathname.toLowerCase();
+                    return {
+                        status: response.status,
+                        url: response.url,
+                        csrf: doc.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+                        loginPage: path.startsWith('/login') || !!doc.querySelector('form input[type="password"]'),
+                        authenticated: !!doc.querySelector('.main-mine__game-hits-left')
+                    };
+                } catch (error) {
+                    return { status: 0, url: location.href, csrf: '', loginPage: true, error: String(error) };
+                }
+            })()
+        """, _on_details)
+        if not details_ready.wait(12):
+            return None
+        details = details.get("value")
+        if not isinstance(details, dict):
+            return None
+        try:
+            status = int(details.get("status") or 0)
+        except (TypeError, ValueError):
+            return None
+        if (
+            status != 200
+            or details.get("loginPage")
+            or not details.get("authenticated")
+            or not is_mangabuff_url(details.get("url", ""))
+            or not details.get("csrf")
+        ):
+            return None
+
+        cookies = mangabuff_cookie_values(auth_window.get_cookies())
+        if not cookies:
+            return None
+
+        from http_session import CHROME_UA
+
+        identity = f"Вход через {SOCIAL_PROVIDERS[provider]}"
+        # Use a provider key to keep the app's account-specific state separate.
+        DataManager.switch_account(f"social:{provider}")
+        DataManager.set_credentials(identity, None)
+        DataManager.save_session(cookies, details["csrf"], CHROME_UA)
+        DataManager.set_setting("auth_method", "social")
+        DataManager.set_setting("auth_provider", provider)
+        return identity
 
     # ----------------------------------------------------------- account
     def check_login(self, email, password):
@@ -209,6 +415,8 @@ class BuffyApi:
             if ok:
                 DataManager.switch_account(email)
                 DataManager.set_credentials(email, password)
+                DataManager.set_setting("auth_method", "password")
+                DataManager.set_setting("auth_provider", None)
                 self._log(f"✅ Вход выполнен: {email}")
                 return {"ok": True}
             if getattr(bot, "login_rejected", False):
@@ -219,14 +427,20 @@ class BuffyApi:
 
     def logout(self):
         self.stop()
+        with self._social_login_lock:
+            auth_window = self._social_login_window
+        if auth_window is not None:
+            try:
+                auth_window.destroy()
+            except Exception:
+                pass
         DataManager.clear_credentials()
         DataManager.set_setting("app_onboarded", False)
         return True
 
     # -------------------------------------------------------------- bot
     def start(self):
-        email, password = DataManager.get_credentials()
-        if not (email and password):
+        if not DataManager.has_authentication():
             return {"ok": False, "error": "Нет данных для входа"}
         if self._status in ("running", "starting", "restarting"):
             return {"ok": True}
@@ -261,8 +475,7 @@ class BuffyApi:
         toggle = MANUAL_TOGGLES.get(name)
         if toggle and not DataManager.get_setting(toggle, True):
             return {"ok": False, "error": "Модуль выключен — сначала включи его переключатель"}
-        email, password = DataManager.get_credentials()
-        if not (email and password):
+        if not DataManager.has_authentication():
             return {"ok": False, "error": "Сначала войди в аккаунт"}
         if self._status == "stopping":
             return {"ok": False, "error": "Бот останавливается, попробуй через пару секунд"}
@@ -433,11 +646,11 @@ class BuffyApi:
         token = (token or "").strip()
         chat_id = (chat_id or "").strip()
         if not token or not chat_id:
-            return {"ok": False, "error": "Нужны токен бота и Chat ID"}
+            return {"ok": False, "error": "Укажи токен бота и номер чата"}
         try:
             r = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
-                data={"chat_id": chat_id, "text": "💜 Buffy на связи! Уведомления настроены."},
+                data={"chat_id": chat_id, "text": "💜 2R2R на связи! Уведомления настроены."},
                 timeout=10,
             )
             body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
@@ -460,7 +673,7 @@ class BuffyApi:
                 chat = (upd.get("message") or {}).get("chat") or {}
                 if chat.get("id"):
                     return {"ok": True, "chat_id": str(chat["id"])}
-            return {"ok": False, "error": "Напиши своему боту любое сообщение и нажми ещё раз"}
+            return {"ok": False, "error": "Напиши своему боту сообщение в Telegram, затем нажми «Найти номер чата»"}
         except Exception as e:
             return {"ok": False, "error": "Нет связи с Telegram. Проверь интернет и попробуй ещё раз."}
 
@@ -536,10 +749,17 @@ class BuffyApi:
         return True
 
     def quit_app(self):
-        """Exit completely: stop the bot, remove the tray icon, close the window."""
-        if self._quit:
-            threading.Thread(target=self._quit, daemon=True).start()
-        return True
+        """Exit completely: stop the bot, remove the tray icon, and close the window."""
+        if not self._quit:
+            return {"ok": False, "error": "Не удалось завершить работу 2R2R"}
+        try:
+            # pywebview calls exposed API methods on a worker thread; let the app
+            # schedule window destruction and a hard-exit fallback from this callback.
+            self._quit()
+            return True
+        except Exception as exc:
+            _file_log().exception("Не удалось закрыть окно 2R2R")
+            return {"ok": False, "error": str(exc)}
 
 
 def _halloween_state(today):
@@ -559,7 +779,7 @@ def _tg_error(description):
     if "unauthorized" in text or "not found" in text and "chat" not in text:
         return "Токен не подошёл. Скопируй его из @BotFather ещё раз целиком."
     if "chat not found" in text:
-        return "Чат не найден. Напиши своему боту любое сообщение и нажми «Найти Chat ID»."
+        return "Чат не найден. Напиши своему боту любое сообщение и нажми «Найти номер чата»."
     if "blocked" in text:
         return "Бот заблокирован в Telegram. Разблокируй его и попробуй снова."
     if "too many requests" in text:
@@ -596,7 +816,7 @@ def build_issue_url(description, raw_lines, secrets=(), status=""):
     title = desc.splitlines()[0][:80]
     head = (
         f"**Что случилось**\n{desc}\n\n"
-        f"**Система**\nBuffy {__version__} · {platform.platform()} · "
+        f"**Система**\n2R2R {__version__} · {platform.platform()} · "
         f"{'exe' if IS_FROZEN else 'python'} · бот: {status}\n\n"
         "<details><summary>Журнал (заполнен автоматически)</summary>\n\n```\n"
     )
@@ -605,7 +825,7 @@ def build_issue_url(description, raw_lines, secrets=(), status=""):
     base = REPO_URL + "/issues/new?"
     while True:
         body = head + "\n".join(lines) + tail
-        url = base + urlencode({"title": f"[Buffy] {title}", "body": body}, quote_via=quote)
+        url = base + urlencode({"title": f"[2R2R] {title}", "body": body}, quote_via=quote)
         if len(url) <= ISSUE_URL_LIMIT or not lines:
             return url
         lines = lines[max(1, len(lines) // 8):]  # drop the oldest lines first

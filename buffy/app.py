@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Buffy desktop shell: web UI window, tray icon, single-instance guard."""
+"""2R2R desktop shell: web UI window, tray icon, single-instance guard."""
 from __future__ import annotations
 
 import os
@@ -40,13 +40,13 @@ def _single_instance():
             kernel32.CloseHandle(event)
         else:
             ctypes.windll.user32.MessageBoxW(
-                None, "Buffy уже запущен — ищи его иконку возле часов.", APP_NAME, 0x40
+                None, "2R2R уже запущен — ищи его иконку возле часов.", APP_NAME, 0x40
             )
     return not already
 
 
 def _listen_for_show(show):
-    """Bring the window back when another launch of Buffy signals it."""
+    """Bring the window back when another launch of 2R2R signals it."""
     if sys.platform != "win32":
         return
     import ctypes
@@ -75,7 +75,7 @@ class Tray:
         self._hint_shown = False
         image = Image.open(resource_path("buffy", "assets", "tray.png"))
         menu = pystray.Menu(
-            pystray.MenuItem("Открыть Buffy", lambda *_: show(), default=True),
+            pystray.MenuItem("Открыть 2R2R", lambda *_: show(), default=True),
             pystray.MenuItem(
                 lambda _: "Остановить бота" if api.is_running() else "Запустить бота",
                 lambda *_: self._toggle(),
@@ -110,7 +110,7 @@ class Tray:
             return
         self._hint_shown = True
         try:
-            self.icon.notify("Buffy работает в фоне. Открыть — двойной клик по иконке.", APP_NAME)
+            self.icon.notify("2R2R работает в фоне. Открыть — двойной клик по иконке.", APP_NAME)
         except Exception:
             pass
 
@@ -152,10 +152,36 @@ def run(start_minimized=False):
         window.restore()
 
     def quit_app():
+        if state["quitting"]:
+            return
         state["quitting"] = True
-        api.stop()
-        tray.stop()
-        window.destroy()
+        try:
+            api.stop()
+        except Exception:
+            pass
+        try:
+            tray.stop()
+        except Exception:
+            pass
+
+        # Ask pywebview to destroy the native window after the JS bridge call returns.
+        def destroy_window():
+            try:
+                window.destroy()
+            except Exception:
+                pass
+
+        destroy_timer = threading.Timer(0.2, destroy_window)
+        destroy_timer.daemon = True
+        destroy_timer.start()
+
+        # Last resort for a stuck WebView2/background worker: do not leave 2R2R.exe alive.
+        def force_exit():
+            os._exit(0)
+
+        exit_timer = threading.Timer(4.0, force_exit)
+        exit_timer.daemon = True
+        exit_timer.start()
 
     tray = Tray(api, show, quit_app)
     _listen_for_show(show)
@@ -173,8 +199,15 @@ def run(start_minimized=False):
     def on_closing():
         action = DataManager.get_setting("app_close_action", "ask")
         if state["quitting"] or action == "quit":
-            api.stop()
-            tray.stop()
+            state["quitting"] = True
+            try:
+                api.stop()
+            except Exception:
+                pass
+            try:
+                tray.stop()
+            except Exception:
+                pass
             return True
         if action == "tray":
             window.hide()
@@ -192,9 +225,8 @@ def run(start_minimized=False):
         if start_minimized:
             # Started with Windows: say it is running, or people launch it again or think it failed
             threading.Timer(3, tray.hint_once).start()
-        email, password = DataManager.get_credentials()
         onboarded = DataManager.get_setting("app_onboarded", False)
-        if email and password and onboarded and DataManager.get_setting("app_start_bot_on_launch", True):
+        if DataManager.has_authentication() and onboarded and DataManager.get_setting("app_start_bot_on_launch", True):
             api.start()
 
     webview.start(on_started, private_mode=False, storage_path=_storage_dir())

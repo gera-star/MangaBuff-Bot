@@ -449,8 +449,8 @@ class UpdaterTests(unittest.TestCase):
             'tag_name': 'v11.1.0',
             'html_url': 'https://github.com/x/y/releases/tag/v11.1.0',
             'assets': [
-                {'name': 'Buffy-11.1.0-portable.zip', 'browser_download_url': 'zip', 'size': 5},
-                {'name': 'Buffy-Setup-11.1.0.exe', 'browser_download_url': 'exe', 'size': 7},
+                {'name': '2R2R-11.1.0-portable.zip', 'browser_download_url': 'zip', 'size': 5},
+                {'name': '2R2R-Setup-11.1.0.exe', 'browser_download_url': 'exe', 'size': 7},
             ],
         }
         resp = Mock()
@@ -478,7 +478,7 @@ class FriendlyJournalTests(unittest.TestCase):
             humanize('⚔️ Battles: 5 | W: 4 | L: 1 | +20 essence', ctx),
             '⚔️ Бои на арене: 5, побед 4, поражений 1, +20 эссенции',
         )
-        self.assertEqual(humanize('⚠️ что-то непонятное', ctx), '⚠️ Чтение глав: небольшая заминка, Buffy повторит сам')
+        self.assertEqual(humanize('⚠️ что-то непонятное', ctx), '⚠️ Чтение глав: небольшая заминка, 2R2R попробует ещё раз')
 
     def test_problem_report_masks_secrets_and_fits_url(self):
         from urllib.parse import unquote
@@ -770,7 +770,7 @@ class AppWordingTests(unittest.TestCase):
         from buffy.api import _tg_error
 
         self.assertIn('Токен не подошёл', _tg_error('Unauthorized'))
-        self.assertIn('Найти Chat ID', _tg_error('Bad Request: chat not found'))
+        self.assertIn('Найти номер чата', _tg_error('Bad Request: chat not found'))
         self.assertIn('Разблокируй', _tg_error('Forbidden: bot was blocked by the user'))
 
     def test_switched_off_module_cannot_be_run_now(self):

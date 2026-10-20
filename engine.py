@@ -391,6 +391,9 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
             res.status_code == 200 and ("/login" in str(res.url).lower() or "auth-form" in res.text.lower()))
         if not logged_out:
             return True  # fine, or the site itself is down (5xx): logging in again would not help
+        if DataManager.get_setting("auth_method") == "social" and not self.password:
+            self.log("⚠️ Сессия входа через соцсеть истекла. Открой 2R2R → «Сменить аккаунт» и войди снова.")
+            return False
         self.log("♻️ Сайт сбросил вход в аккаунт — вхожу заново")
         return self.login_and_steal_keys()
 
@@ -399,12 +402,24 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
         if time.time() - getattr(self, "_last_419_relogin", 0) < 60:
             return self.csrf_token
         self._last_419_relogin = time.time()
+        if DataManager.get_setting("auth_method") == "social" and not self.password:
+            self.log("⚠️ Сессия соцавторизации устарела. Повтори вход через соцсеть в 2R2R.")
+            return None
         self.log("♻️ Сайт ответил 419 (сессия устарела) — вхожу заново и повторяю действие")
         return self.csrf_token if self.login_and_steal_keys() else None
 
     def login_and_steal_keys(self):
-        self.auth_log_buffer.append("Logging in via API...")
         self.login_rejected = False  # True when the site answered and refused the email/password
+        if not (self.email and self.password):
+            if DataManager.get_setting("auth_method") == "social":
+                self.auth_log_buffer.append(
+                    "Сохранён вход через соцсеть, но сессия уже недействительна. "
+                    "Повтори вход через соцсеть в окне 2R2R."
+                )
+            else:
+                self.auth_log_buffer.append("Для входа нужны почта и пароль MangaBuff.")
+            return False
+        self.auth_log_buffer.append("Logging in via API...")
         try:
             self.session.cookies.clear()
         except Exception:
@@ -3422,7 +3437,11 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                     "не удаётся войти на MangaBuff",
                     f"Причина: {escape(str(reason))}\n"
                     f"Попытка {attempt}, следующая через ~{wait_min} мин.\n"
-                    "Проверь логин/пароль в user_data.json или прокси.",
+                    + (
+                        "Повтори вход через соцсеть в 2R2R → «Сменить аккаунт»."
+                        if DataManager.get_setting("auth_method") == "social"
+                        else "Проверь логин/пароль в user_data.json или прокси."
+                    ),
                 )
             wait_sec = wait_min * 60 + random.randint(10, 60)
             self._persist_panel_state(next_action="Повторный вход в аккаунт", next_wait_sec=wait_sec)
