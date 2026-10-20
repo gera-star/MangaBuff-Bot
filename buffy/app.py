@@ -179,7 +179,7 @@ def run(start_minimized=False):
         def force_exit():
             os._exit(0)
 
-        exit_timer = threading.Timer(10.0, force_exit)
+        exit_timer = threading.Timer(4.0, force_exit)
         exit_timer.daemon = True
         exit_timer.start()
 
