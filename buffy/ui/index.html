@@ -784,7 +784,7 @@ textarea.input { resize: vertical; min-height: 110px; font: inherit; color: inhe
       <h2>Сообщить о проблеме</h2>
       <p class="lead">Опиши, что пошло не так. 2R2R сохранит полный технический отчёт в файл, скрыв почту, пароль, токены и прокси.</p>
       <textarea class="input" id="rep-text" rows="5" placeholder="Например: арена перестала проводить бои после обновления"></textarea>
-      <p class="hint" style="margin:10px 0 0">Откроются папка с Buffy-diagnostic.txt и GitHub. Перетащи файл в текст сообщения и нажми «Create». Вставленный в сообщение журнал сокращён; файл содержит весь сохранённый лог. Нужен аккаунт GitHub.</p>
+      <p class="hint" style="margin:10px 0 0">Откроются папка с 2R2R-diagnostic.txt и GitHub. Перетащи файл в текст сообщения и нажми «Create». Вставленный в сообщение журнал сокращён; файл содержит весь сохранённый лог. Нужен аккаунт GitHub.</p>
       <div class="wiz-nav">
         <button class="btn ghost" id="rep-cancel">Отмена</button>
         <button class="btn primary" id="rep-send">Открыть GitHub</button>
@@ -1005,8 +1005,8 @@ function mockApi() {
   setInterval(() => { if (status === "running") push(sample[seq % sample.length]); }, 1500);
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   return {
-    get_bootstrap: async () => ({ app: "2R2R", version: "11.1.0", repo: "https://github.com/gera-star/MangaBuff-Bot",
-      email: onboarded ? "demo@buffy.app" : "", has_credentials: onboarded, onboarded, settings, profile: onboarded ? DEMO_PROFILE : null, data_dir: "C:\\Users\\you\\AppData\\Roaming\\2R2R" }),
+    get_bootstrap: async () => ({ app: "2R2R", version: "11.1.1", repo: "https://github.com/gera-star/MangaBuff-Bot",
+      email: onboarded ? "demo@2r2r.app" : "", has_credentials: onboarded, onboarded, settings, profile: onboarded ? DEMO_PROFILE : null, data_dir: "C:\\Users\\you\\AppData\\Roaming\\2R2R" }),
     get_settings: async () => settings,
     set_setting: async (k, v) => { settings[k] = v; return true; },
     social_login: async () => { await wait(900); return { ok: true }; },
@@ -1051,12 +1051,12 @@ function mockApi() {
     find_chat_id: async () => { await wait(600); return { ok: true, chat_id: "713822262" }; },
     test_proxy: async () => { await wait(800); return { ok: true, detail: "MangaBuff доступен · 184 мс" }; },
     open_url: async () => true, open_data_dir: async () => true, report_problem: async () => ({ ok: true }),
-    export_logs: async () => ({ ok: true, path: "reports/Buffy-diagnostic.txt" }),
+    export_logs: async () => ({ ok: true, path: "reports/2R2R-diagnostic.txt" }),
     hide_window: async () => true, quit_app: async () => true,
     run_module: async (n) => { manual[n] = { state: "running", summary: "" };
       setTimeout(() => manual[n] = { state: "done", at: "21:40", summary: "главы 55/75, бонусные карты 6/10. Следующая карта примерно через 28 мин" }, 2500);
       return { ok: true }; },
-    get_update: async () => ({ state: "available", version: "11.1.0", current: "11.0.0", progress: 0, can_install: true }),
+    get_update: async () => ({ state: "available", version: "11.1.1", current: "11.1.0", progress: 0, can_install: true }),
     check_update: async () => true, install_update: async () => true,
   };
 }
@@ -1784,7 +1784,7 @@ $("#log-export").addEventListener("click", async () => {
   button.disabled = true;
   try {
     const result = await api.export_logs();
-    toast(result.ok ? (result.warning || "Полный лог сохранён в Buffy-diagnostic.txt. Папка открыта.") : result.error, result.ok ? "ok" : "err");
+    toast(result.ok ? (result.warning || "Полный лог сохранён в 2R2R-diagnostic.txt. Папка открыта.") : result.error, result.ok ? "ok" : "err");
   } catch (_) { toast("Не удалось сохранить отчёт. Попробуй ещё раз.", "err"); }
   finally { button.disabled = false; }
 });
@@ -1798,7 +1798,7 @@ $("#rep-send").addEventListener("click", async () => {
     if (!result.ok) { toast(result.error, "err"); return; }
     $("#report").classList.remove("show");
     $("#rep-text").value = "";
-    toast(result.warning || "Прикрепи Buffy-diagnostic.txt из открывшейся папки к сообщению на GitHub.", "ok");
+    toast(result.warning || "Прикрепи 2R2R-diagnostic.txt из открывшейся папки к сообщению на GitHub.", "ok");
   } catch (_) { toast("Не удалось подготовить сообщение. Описание сохранено — попробуй ещё раз.", "err"); }
   finally { button.disabled = false; }
 });
