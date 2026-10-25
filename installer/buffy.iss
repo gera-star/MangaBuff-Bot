@@ -53,7 +53,7 @@ Name: "{autodesktop}\2R2R"; Filename: "{app}\2R2R.exe"; Tasks: desktopicon
 [Registry]
 ; Remove the "start with Windows" entry the app may have added
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Buffy"; Flags: uninsdeletevalue dontcreatekey
-Root: HKCU; Subkey: "Software\\Microsoft\\Windows\\CurrentVersion\\Run"; ValueType: none; ValueName: "2R2R"; Flags: uninsdeletevalue dontcreatekey
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "2R2R"; Flags: uninsdeletevalue dontcreatekey
 
 [Run]
 Filename: "{app}\2R2R.exe"; Description: "{cm:LaunchProgram,2R2R}"; Flags: nowait postinstall skipifsilent
