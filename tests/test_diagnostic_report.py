@@ -43,26 +43,26 @@ class DiagnosticReportTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertIn('warning', result)
         body = parse_qs(urlsplit(browser.call_args.args[0]).query)['body'][0]
-        self.assertNotIn('2R2R-diagnostic.txt', body)
+        self.assertNotIn('Buffy-diagnostic.txt', body)
 
     def test_report_creates_file_before_opening_github_and_mentions_attachment(self):
         api = BuffyApi()
-        with patch.object(api, '_save_report', return_value='C:/reports/2R2R-diagnostic.txt') as save, \
+        with patch.object(api, '_save_report', return_value='C:/reports/Buffy-diagnostic.txt') as save, \
                 patch.object(api, '_report_secrets', return_value=()), \
                 patch.object(api, '_reveal_report'), patch('buffy.api.webbrowser.open') as browser:
             result = api.report_problem('reading broken')
         self.assertTrue(result['ok'])
         save.assert_called_once_with('reading broken')
         body = parse_qs(urlsplit(browser.call_args.args[0]).query)['body'][0]
-        self.assertIn('2R2R-diagnostic.txt', body)
+        self.assertIn('Buffy-diagnostic.txt', body)
         self.assertIn('прикреп', body.lower())
 
     def test_truncated_issue_explicitly_requests_full_file(self):
         url = build_issue_url('broken', ['old ' + 'я' * 900] * 500,
-                              report_name='2R2R-diagnostic.txt')
+                              report_name='Buffy-diagnostic.txt')
         self.assertLessEqual(len(url), ISSUE_URL_LIMIT)
         body = parse_qs(urlsplit(url).query)['body'][0]
-        self.assertIn('2R2R-diagnostic.txt', body)
+        self.assertIn('Buffy-diagnostic.txt', body)
         self.assertIn('сокращ', body.lower())
 
     def test_masking_handles_quoted_multiline_values_and_auth_headers(self):
@@ -85,14 +85,14 @@ class DiagnosticReportTests(unittest.TestCase):
 
     def test_folder_failure_keeps_export_and_gives_its_path(self):
         api = BuffyApi()
-        with patch.object(api, '_save_report', return_value='C:/reports/2R2R-diagnostic.txt'), \
+        with patch.object(api, '_save_report', return_value='C:/reports/Buffy-diagnostic.txt'), \
                 patch.object(api, '_reveal_report', side_effect=OSError('explorer failed')):
             result = api.export_logs()
         self.assertTrue(result['ok'])
         self.assertIn(result['path'], result['warning'])
 
     def test_huge_description_with_emoji_still_fits_issue_url(self):
-        url = build_issue_url('📖' * 10000, [], report_name='2R2R-diagnostic.txt')
+        url = build_issue_url('📖' * 10000, [], report_name='Buffy-diagnostic.txt')
         self.assertLessEqual(len(url), ISSUE_URL_LIMIT)
 
     def test_reading_response_redacts_known_secrets_and_omits_nested_validation(self):

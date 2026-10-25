@@ -22,7 +22,7 @@ def main():
     parser = argparse.ArgumentParser(description="MangaBuff Miner Bot")
     parser.add_argument("--cli", action="store_true", help="Run in CLI mode (single run)")
     parser.add_argument("--daemon", action="store_true", help="Run in autonomous 24/7 Smart Daemon mode")
-    parser.add_argument("--app", "--gui", dest="app", action="store_true", help="Open the 2R2R desktop app")
+    parser.add_argument("--app", "--gui", dest="app", action="store_true", help="Open the Buffy desktop app")
     parser.add_argument("--minimized", action="store_true", help="Start the desktop app hidden in the tray")
     parser.add_argument("--status", action="store_true", help="Check status and exit")
     parser.add_argument("--proxy", type=str, default=None, help="Proxy (ip:port:user:pass or http://user:pass@ip:port)")

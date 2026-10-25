@@ -449,8 +449,8 @@ class UpdaterTests(unittest.TestCase):
             'tag_name': 'v11.1.0',
             'html_url': 'https://github.com/x/y/releases/tag/v11.1.0',
             'assets': [
-                {'name': '2R2R-11.1.0-portable.zip', 'browser_download_url': 'zip', 'size': 5},
-                {'name': '2R2R-Setup-11.1.0.exe', 'browser_download_url': 'exe', 'size': 7},
+                {'name': 'Buffy-11.1.0-portable.zip', 'browser_download_url': 'zip', 'size': 5},
+                {'name': 'Buffy-Setup-11.1.0.exe', 'browser_download_url': 'exe', 'size': 7},
             ],
         }
         resp = Mock()
@@ -466,7 +466,7 @@ class UpdaterTests(unittest.TestCase):
         from buffy import updater
 
         release = {'tag_name': 'v11.1.0', 'html_url': 'page',
-                   'assets': [{'name': '2R2R-Setup-11.1.0.exe', 'browser_download_url': 'exe', 'size': 7}]}
+                   'assets': [{'name': 'Buffy-Setup-11.1.0.exe', 'browser_download_url': 'exe', 'size': 7}]}
         tags = [{'name': 'v11.0.9'}, {'name': 'v11.1.0'}, {'name': 'v11.0.12'}, {'name': 'nightly'}]
         asked = []
 
@@ -499,7 +499,7 @@ class FriendlyJournalTests(unittest.TestCase):
             humanize('⚔️ Battles: 5 | W: 4 | L: 1 | +20 essence', ctx),
             '⚔️ Бои на арене: 5, побед 4, поражений 1, +20 эссенции',
         )
-        self.assertEqual(humanize('⚠️ что-то непонятное', ctx), '⚠️ Чтение глав: небольшая заминка, 2R2R попробует ещё раз')
+        self.assertEqual(humanize('⚠️ что-то непонятное', ctx), '⚠️ Чтение глав: небольшая заминка, Buffy повторит сам')
 
     def test_problem_report_masks_secrets_and_fits_url(self):
         from urllib.parse import unquote

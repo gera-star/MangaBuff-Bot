@@ -9,7 +9,7 @@ from diagnostics import mask_secrets
 
 
 def save_report(folder, description, raw_lines, secrets, status, logger):
-    sections = [f'2R2R diagnostic report\nVersion: {__version__}\nSystem: {platform.platform()}\n'
+    sections = [f'Buffy diagnostic report\nVersion: {__version__}\nSystem: {platform.platform()}\n'
                 f'Created: {datetime.now().astimezone().isoformat()}\nBot: {status}\n\n'
                 f'Description:\n{description}\n\n'
                 'Contains all currently retained logs; older rotated data may have expired.\n']
@@ -35,7 +35,7 @@ def save_report(folder, description, raw_lines, secrets, status, logger):
     report = mask_secrets('\n'.join(sections), secrets)
     reports = os.path.join(folder, 'reports')
     os.makedirs(reports, exist_ok=True)
-    target = os.path.join(reports, '2R2R-diagnostic.txt')
+    target = os.path.join(reports, 'Buffy-diagnostic.txt')
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=reports, delete=False) as out:

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Self-update from GitHub releases: find a newer 2R2R-Setup-*.exe, download it, run it silently."""
+"""Self-update from GitHub releases: find a newer Buffy-Setup-*.exe, download it, run it silently."""
 from __future__ import annotations
 
 import os
@@ -13,9 +13,9 @@ import requests
 
 from buffy import __version__
 
-REPO_API = "https://api.github.com/repos/gera-star/MangaBuff-Bot"
+REPO_API = "https://api.github.com/repos/Qu4dyz/MangaBuff-Miner-Bot"
 LATEST_URL = REPO_API + "/releases/latest"
-SETUP_RE = re.compile(r"^2R2R-Setup-[\w.\-]+\.exe$", re.IGNORECASE)
+SETUP_RE = re.compile(r"^Buffy-Setup-[\w.\-]+\.exe$", re.IGNORECASE)
 CHECK_EVERY_SEC = 30 * 60  # GitHub allows 60 anonymous API calls/hour per IP; 2 is safe
 
 
@@ -66,7 +66,7 @@ def fetch_latest(timeout=15):
 
 
 def installed_copy() -> bool:
-    """True for a copy installed by 2R2R-Setup (Inno leaves unins000.exe next to the exe)."""
+    """True for a copy installed by Buffy-Setup (Inno leaves unins000.exe next to the exe)."""
     from config import IS_FROZEN
 
     if not IS_FROZEN:
@@ -155,7 +155,7 @@ class Updater:
 
     def _download(self, info):
         self._set(state="downloading", progress=0)
-        folder = os.path.join(tempfile.gettempdir(), "2R2RUpdate")
+        folder = os.path.join(tempfile.gettempdir(), "BuffyUpdate")
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, info["name"])
         part = path + ".part"

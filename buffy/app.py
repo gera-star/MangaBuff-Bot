@@ -40,7 +40,7 @@ def _single_instance():
             kernel32.CloseHandle(event)
         else:
             ctypes.windll.user32.MessageBoxW(
-                None, "2R2R уже запущен — ищи его иконку возле часов.", APP_NAME, 0x40
+                None, "Buffy уже запущен — ищи его иконку возле часов.", APP_NAME, 0x40
             )
     return not already
 
@@ -75,7 +75,7 @@ class Tray:
         self._hint_shown = False
         image = Image.open(resource_path("buffy", "assets", "tray.png"))
         menu = pystray.Menu(
-            pystray.MenuItem("Открыть 2R2R", lambda *_: show(), default=True),
+            pystray.MenuItem("Открыть Buffy", lambda *_: show(), default=True),
             pystray.MenuItem(
                 lambda _: "Остановить бота" if api.is_running() else "Запустить бота",
                 lambda *_: self._toggle(),
@@ -110,7 +110,7 @@ class Tray:
             return
         self._hint_shown = True
         try:
-            self.icon.notify("2R2R работает в фоне. Открыть — двойной клик по иконке.", APP_NAME)
+            self.icon.notify("Buffy работает в фоне. Открыть — двойной клик по иконке.", APP_NAME)
         except Exception:
             pass
 
@@ -152,36 +152,10 @@ def run(start_minimized=False):
         window.restore()
 
     def quit_app():
-        if state["quitting"]:
-            return
         state["quitting"] = True
-        try:
-            api.stop()
-        except Exception:
-            pass
-        try:
-            tray.stop()
-        except Exception:
-            pass
-
-        # Destroy the native window after the JS bridge call returns.
-        def destroy_window():
-            try:
-                window.destroy()
-            except Exception:
-                pass
-
-        destroy_timer = threading.Timer(0.2, destroy_window)
-        destroy_timer.daemon = True
-        destroy_timer.start()
-
-        # Last-resort fallback: never leave a stuck WebView2 process alive after an explicit exit.
-        def force_exit():
-            os._exit(0)
-
-        exit_timer = threading.Timer(4.0, force_exit)
-        exit_timer.daemon = True
-        exit_timer.start()
+        api.stop()
+        tray.stop()
+        window.destroy()
 
     tray = Tray(api, show, quit_app)
     _listen_for_show(show)
@@ -200,8 +174,8 @@ def run(start_minimized=False):
     def on_closing():
         action = DataManager.get_setting("app_close_action", "ask")
         if state["quitting"] or action == "quit":
-            if not state["quitting"]:
-                quit_app()
+            api.stop()
+            tray.stop()
             return True
         if action == "tray":
             window.hide()

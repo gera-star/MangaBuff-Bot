@@ -98,11 +98,6 @@ class DataManager:
         email, password = DataManager.get_credentials()
         return bool(email and (password or DataManager.get_setting("login_method") == "social"))
 
-    @staticmethod
-    def has_authentication():
-        """Compatibility alias for the desktop shell's previous login-check API."""
-        return DataManager.has_login()
-
     # Remembered per account; app preferences (toggles, Telegram, proxy) stay shared
     ACCOUNT_KEYS = ("arena_no_deck", "arena_rank_tracker", "bonus_cards_dry", "bonus_cards_off_date",
                     "club_crystals_date", "club_none_date", "club_slug", "notified_trade_ids",

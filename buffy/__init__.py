@@ -1,5 +1,5 @@
-"""2R2R — настольное приложение для автоматизации MangaBuff."""
+"""Buffy — desktop app for the MangaBuff automation daemon."""
 
-__version__ = "11.1.1"
-APP_NAME = "2R2R"
-REPO_URL = "https://github.com/gera-star/MangaBuff-Bot"
+__version__ = "11.1.0"
+APP_NAME = "Buffy"
+REPO_URL = "https://github.com/Qu4dyz/MangaBuff-Miner-Bot"

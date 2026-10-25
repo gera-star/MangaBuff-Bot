@@ -1,4 +1,4 @@
-"""Render 2R2R's icon (PNG + multi-size ICO + tray + UI logo) into buffy/.
+"""Render Buffy's icon (PNG + multi-size ICO + tray + UI logo) into buffy/.
 
 Two fanned collectible cards with a sparkle on a dark violet tile.
 Run after changing the design: python -m buffy.make_icon

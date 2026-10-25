@@ -11,26 +11,14 @@ def get_base_path():
 
     Script runs (VPS/systemd) keep everything next to the code. The packaged
     desktop app runs from a temp extraction dir, so it stores data in
-    %APPDATA%\\2R2R instead (override with 2R2R_HOME; BUFFY_HOME remains supported for compatibility).
+    %APPDATA%\\Buffy instead (override with BUFFY_HOME).
     """
-    override = os.getenv("2R2R_HOME") or os.getenv("BUFFY_HOME")
+    override = os.getenv("BUFFY_HOME")
     if override:
         return override
     if IS_FROZEN:
         root = os.getenv("APPDATA") or os.path.expanduser("~")
-        target = os.path.join(root, "2R2R")
-        legacy = os.path.join(root, "Buffy")
-        # Preserve settings, credentials and progress from older installations.
-        if not os.path.exists(target) and os.path.isdir(legacy):
-            import shutil
-            try:
-                shutil.copytree(legacy, target)
-            except OSError:
-                # Remove an incomplete copy so a later launch can retry safely.
-                shutil.rmtree(target, ignore_errors=True)
-                # If migration cannot complete, keep using the existing working data.
-                return legacy
-        return target
+        return os.path.join(root, "Buffy")
     return os.path.dirname(os.path.abspath(__file__))
 
 

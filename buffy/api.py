@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Bridge between the 2R2R web UI and the bot engine.
+"""Bridge between the Buffy web UI and the bot engine.
 
 Every public method here is callable from JavaScript as
 ``window.pywebview.api.<name>(...)``; internals start with ``_`` so
@@ -28,7 +28,6 @@ from buffy.humanize import MODULES as MODULE_TITLES, humanize
 from data_management import DataManager
 from diagnostics import mask_secrets
 from buffy.diagnostics import save_report
-from buffy.social_auth import SOCIAL_PROVIDERS, is_mangabuff_url, mangabuff_cookie_values, social_login_url
 from utils import normalize_proxy_url
 
 MSK = timezone(timedelta(hours=3))
@@ -168,7 +167,7 @@ class BuffyApi:
         try:
             path = self._save_report(description)
         except OSError:
-            return {'ok': False, 'error': 'Не удалось сохранить отчёт. Проверь свободное место и доступ к папке 2R2R.'}
+            return {'ok': False, 'error': 'Не удалось сохранить отчёт. Проверь свободное место и доступ к папке Buffy.'}
         result = {'ok': True, 'path': path}
         try:
             self._reveal_report(path)
@@ -255,8 +254,7 @@ class BuffyApi:
             return {"ok": False, "error": f"Ошибка соединения: {e}"}
 
     def social_login(self, provider):
-        """Sign in through a known MangaBuff provider and keep only MangaBuff cookies."""
-        provider = str(provider or "").strip().lower()
+        """Sign in through MangaBuff's own page (VK, Discord, Yandex, Google) and keep that window's cookies."""
         name = SOCIAL_PROVIDERS.get(provider)
         if not name:
             return {"ok": False, "error": "Неизвестный способ входа"}
@@ -296,7 +294,7 @@ class BuffyApi:
 
         with self._social_lock:
             win = webview.create_window(f"Вход в MangaBuff через {SOCIAL_PROVIDERS[provider]}",
-                                        social_login_url(provider),
+                                        f"https://mangabuff.ru/login/redirect/{provider}",
                                         width=560, height=760, hidden=hidden_sec > 0)
             closed = threading.Event()
             win.events.closed += closed.set
@@ -305,17 +303,11 @@ class BuffyApi:
                 shown = hidden_sec <= 0
                 while not closed.is_set() and time.time() - started < (timeout_sec or SOCIAL_LOGIN_TIMEOUT_SEC):
                     try:
-                        current_url = win.get_current_url() or ""
-                        url = urlsplit(current_url)
-                        # Accept cookies only after HTTPS navigation back to MangaBuff itself.
-                        if is_mangabuff_url(current_url) and not url.path.lower().startswith("/login"):
-                            cookies = mangabuff_cookie_values(win.get_cookies())
-                            if cookies:
-                                try:
-                                    user_agent = win.evaluate_js("navigator.userAgent")
-                                except Exception:
-                                    user_agent = None
-                                return cookies, user_agent
+                        url = urlsplit(win.get_current_url() or "")
+                        # The site sends a signed-in user from /login/callback/... to an ordinary page
+                        if url.hostname == "mangabuff.ru" and not url.path.startswith("/login"):
+                            cookies = {m.key: m.value for jar in win.get_cookies() for m in jar.values()}
+                            return cookies, win.evaluate_js("navigator.userAgent")
                     except Exception:
                         pass  # pywebview gives up after 20 s of a still-loading page; MangaBuff often takes longer
                     if not shown and time.time() - started >= hidden_sec:
@@ -793,7 +785,7 @@ class BuffyApi:
         try:
             r = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
-                data={"chat_id": chat_id, "text": "💜 2R2R на связи! Уведомления настроены."},
+                data={"chat_id": chat_id, "text": "💜 Buffy на связи! Уведомления настроены."},
                 timeout=10,
             )
             body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
@@ -937,6 +929,7 @@ def _passes(stats, mins):
         and stats.get("crit", 0) >= mins["min_crit"]
 
 
+SOCIAL_PROVIDERS = {"vkid": "ВКонтакте", "discord": "Discord", "yandex": "Яндекс", "google": "Google"}
 SOCIAL_LOGIN_TIMEOUT_SEC = 10 * 60
 SOCIAL_SILENT_SEC = 30  # hidden re-login attempt before the window is shown
 
@@ -949,7 +942,7 @@ def build_issue_url(description, raw_lines, secrets=(), status="", report_name='
     title = desc.splitlines()[0][:80]
     head = (
         f"**Что случилось**\n{desc}\n\n"
-        f"**Система**\n2R2R {__version__} · {platform.platform()} · "
+        f"**Система**\nBuffy {__version__} · {platform.platform()} · "
         f"{'exe' if IS_FROZEN else 'python'} · бот: {status}\n\n"
         + (f'**Полный журнал:** прикрепи файл `{report_name}` из открывшейся папки.\n\n' if report_name else '')
         + "<details><summary>Сокращённый журнал (полный — в файле отчёта)</summary>\n\n```\n"
@@ -959,7 +952,7 @@ def build_issue_url(description, raw_lines, secrets=(), status="", report_name='
     base = REPO_URL + "/issues/new?"
     while True:
         body = head + "\n".join(lines) + tail
-        url = base + urlencode({"title": f"[2R2R] {title}", "body": body}, quote_via=quote)
+        url = base + urlencode({"title": f"[Buffy] {title}", "body": body}, quote_via=quote)
         if len(url) <= ISSUE_URL_LIMIT or not lines:
             return url
         lines = lines[max(1, len(lines) // 8):]  # drop the oldest lines first
