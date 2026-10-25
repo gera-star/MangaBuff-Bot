@@ -1762,11 +1762,6 @@ $("#proxy-clear").addEventListener("click", async () => {
 /* Settings page */
 let boot = {};
 $("#acc-change").addEventListener("click", async () => {
-  if (!confirm("Выйти из аккаунта? Бот остановится, а 2R2R попросит войти заново.")) return;
-  await api.logout();
-  wizard.open(1);
-});
-$("#acc-change").addEventListener("click", async () => {
   if (status === "running" || status === "starting" || status === "restarting" || status === "stopping" || manualBusy) {
     toast("Сначала останови бота и дождись статуса «Остановлен», затем добавь аккаунт.", "err");
     return;

@@ -28,6 +28,7 @@ from buffy.humanize import MODULES as MODULE_TITLES, humanize
 from data_management import DataManager
 from diagnostics import mask_secrets
 from buffy.diagnostics import save_report
+from buffy.social_auth import SOCIAL_PROVIDERS, is_mangabuff_url, mangabuff_cookie_values, social_login_url
 from utils import normalize_proxy_url
 
 MSK = timezone(timedelta(hours=3))
@@ -254,7 +255,8 @@ class BuffyApi:
             return {"ok": False, "error": f"Ошибка соединения: {e}"}
 
     def social_login(self, provider):
-        """Sign in through MangaBuff's own page (VK, Discord, Yandex, Google) and keep that window's cookies."""
+        """Sign in through a known MangaBuff provider and keep only MangaBuff cookies."""
+        provider = str(provider or "").strip().lower()
         name = SOCIAL_PROVIDERS.get(provider)
         if not name:
             return {"ok": False, "error": "Неизвестный способ входа"}
@@ -294,7 +296,7 @@ class BuffyApi:
 
         with self._social_lock:
             win = webview.create_window(f"Вход в MangaBuff через {SOCIAL_PROVIDERS[provider]}",
-                                        f"https://mangabuff.ru/login/redirect/{provider}",
+                                        social_login_url(provider),
                                         width=560, height=760, hidden=hidden_sec > 0)
             closed = threading.Event()
             win.events.closed += closed.set
@@ -303,11 +305,17 @@ class BuffyApi:
                 shown = hidden_sec <= 0
                 while not closed.is_set() and time.time() - started < (timeout_sec or SOCIAL_LOGIN_TIMEOUT_SEC):
                     try:
-                        url = urlsplit(win.get_current_url() or "")
-                        # The site sends a signed-in user from /login/callback/... to an ordinary page
-                        if url.hostname == "mangabuff.ru" and not url.path.startswith("/login"):
-                            cookies = {m.key: m.value for jar in win.get_cookies() for m in jar.values()}
-                            return cookies, win.evaluate_js("navigator.userAgent")
+                        current_url = win.get_current_url() or ""
+                        url = urlsplit(current_url)
+                        # Accept cookies only after HTTPS navigation back to MangaBuff itself.
+                        if is_mangabuff_url(current_url) and not url.path.lower().startswith("/login"):
+                            cookies = mangabuff_cookie_values(win.get_cookies())
+                            if cookies:
+                                try:
+                                    user_agent = win.evaluate_js("navigator.userAgent")
+                                except Exception:
+                                    user_agent = None
+                                return cookies, user_agent
                     except Exception:
                         pass  # pywebview gives up after 20 s of a still-loading page; MangaBuff often takes longer
                     if not shown and time.time() - started >= hidden_sec:
@@ -929,7 +937,6 @@ def _passes(stats, mins):
         and stats.get("crit", 0) >= mins["min_crit"]
 
 
-SOCIAL_PROVIDERS = {"vkid": "ВКонтакте", "discord": "Discord", "yandex": "Яндекс", "google": "Google"}
 SOCIAL_LOGIN_TIMEOUT_SEC = 10 * 60
 SOCIAL_SILENT_SEC = 30  # hidden re-login attempt before the window is shown
 

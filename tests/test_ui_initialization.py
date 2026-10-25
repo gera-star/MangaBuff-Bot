@@ -19,7 +19,9 @@ def test_add_account_and_close_actions_are_reachable_and_report_failures():
     source = html_path.read_text(encoding="utf-8")
 
     assert '>＋ Добавить аккаунт</button>' in source
-    assert '$("#acc-change").addEventListener("click", async () => {' in source
+    assert source.count('$("#acc-change").addEventListener("click", async () => {') == 1
+    assert "await api.logout();" not in source
+    assert "Keep the current login until the new login succeeds." in source
     assert 'wizard.open(1);' in source
     assert 'async function closeAs(action)' in source
     assert 'await api.quit_app()' in source

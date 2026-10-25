@@ -1,6 +1,8 @@
 from http.cookies import SimpleCookie
 
-from buffy.social_auth import mangabuff_cookie_values
+import pytest
+
+from buffy.social_auth import is_mangabuff_url, mangabuff_cookie_values, social_login_url
 
 
 def test_cookie_export_keeps_only_mangabuff_domain_cookies():
@@ -37,3 +39,17 @@ def test_cookie_export_skips_empty_and_foreign_cookie_values():
         {"name": "ok", "value": "session", "domain": "mangabuff.ru"},
     ]
     assert mangabuff_cookie_values(cookies) == {"ok": "session"}
+
+
+def test_social_login_url_only_allows_known_providers():
+    assert social_login_url(" GOOGLE ") == "https://mangabuff.ru/login/redirect/google"
+    with pytest.raises(ValueError):
+        social_login_url("https://example.org")
+
+
+def test_social_return_url_requires_https_and_a_mangabuff_host():
+    assert is_mangabuff_url("https://mangabuff.ru/balance")
+    assert is_mangabuff_url("https://auth.mangabuff.ru/callback")
+    assert not is_mangabuff_url("http://mangabuff.ru/balance")
+    assert not is_mangabuff_url("https://mangabuff.ru.example.org/balance")
+    assert not is_mangabuff_url("https://mangabuff.ru@evil.example/balance")
