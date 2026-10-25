@@ -1,4 +1,4 @@
-# Buffy desktop app (Windows). The server daemon only needs requirements.txt.
+# 2R2R desktop app (Windows). The server daemon only needs requirements.txt.
 -r requirements.txt
 pywebview>=5.0
 pystray>=0.19

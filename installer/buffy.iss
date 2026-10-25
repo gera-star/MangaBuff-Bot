@@ -13,7 +13,7 @@ AppId={{6F4B7C2E-9D1A-4E7B-A3C5-B0FF1E5A9D21}
 AppName=2R2R
 AppVersion={#AppVersion}
 AppVerName=2R2R {#AppVersion}
-AppPublisher=Qu4dyz
+AppPublisher=2R2R
 AppPublisherURL=https://github.com/gera-star/MangaBuff-Bot
 AppSupportURL=https://github.com/gera-star/MangaBuff-Bot/issues
 ; Per-user install: no admin prompt, updates in place
