@@ -461,6 +461,27 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(info['url'], 'exe')
         self.assertEqual(info['size'], 7)
 
+    def test_latest_404_falls_back_to_the_newest_tag(self):
+        # GitHub outage: no release list for logged-out users, yet each release opens by its tag
+        from buffy import updater
+
+        release = {'tag_name': 'v11.1.0', 'html_url': 'page',
+                   'assets': [{'name': '2R2R-Setup-11.1.0.exe', 'browser_download_url': 'exe', 'size': 7}]}
+        tags = [{'name': 'v11.0.9'}, {'name': 'v11.1.0'}, {'name': 'v11.0.12'}, {'name': 'nightly'}]
+        asked = []
+
+        def get(url, **kw):
+            asked.append(url.rsplit('/', 1)[-1])
+            if url.endswith('/releases/latest'):
+                return Mock(status_code=404)
+            if '/tags?' in url:
+                return Mock(status_code=200, json=Mock(return_value=tags))
+            return Mock(status_code=200, json=Mock(return_value=release))
+        with patch.object(updater.requests, 'get', side_effect=get):
+            info = updater.fetch_latest()
+        self.assertEqual(asked[-1], 'v11.1.0')  # the highest version, not the first tag listed
+        self.assertEqual(info['url'], 'exe')
+
 
 class FriendlyJournalTests(unittest.TestCase):
     def test_technical_lines_become_plain_or_hidden(self):
@@ -478,7 +499,7 @@ class FriendlyJournalTests(unittest.TestCase):
             humanize('⚔️ Battles: 5 | W: 4 | L: 1 | +20 essence', ctx),
             '⚔️ Бои на арене: 5, побед 4, поражений 1, +20 эссенции',
         )
-        self.assertEqual(humanize('⚠️ что-то непонятное', ctx), '⚠️ Чтение глав: небольшая заминка, 2R2R попробует ещё раз')
+        self.assertEqual(humanize('⚠️ что-то непонятное', ctx), '⚠️ Чтение глав: небольшая заминка, Buffy повторит сам')
 
     def test_problem_report_masks_secrets_and_fits_url(self):
         from urllib.parse import unquote
@@ -770,7 +791,7 @@ class AppWordingTests(unittest.TestCase):
         from buffy.api import _tg_error
 
         self.assertIn('Токен не подошёл', _tg_error('Unauthorized'))
-        self.assertIn('Найти номер чата', _tg_error('Bad Request: chat not found'))
+        self.assertIn('Найти Chat ID', _tg_error('Bad Request: chat not found'))
         self.assertIn('Разблокируй', _tg_error('Forbidden: bot was blocked by the user'))
 
     def test_switched_off_module_cannot_be_run_now(self):

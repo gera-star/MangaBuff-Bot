@@ -111,11 +111,17 @@ def get_html(session, url, **kwargs):
             headers['X-Requested-With'] = xhr
 
 
-def post_once(session, url, **kwargs):
+class SendCancelled(Exception):
+    """before_send said no after the throttle wait: nothing was sent."""
+
+
+def post_once(session, url, before_send=None, **kwargs):
     if hasattr(session, '_raw_request') and hasattr(session, '_throttle'):
         if session.should_abort and session.should_abort():
             raise RuntimeError('module aborted')
         session._throttle()
+        if before_send and not before_send():  # checked after the wait, right before the request
+            raise SendCancelled()
         response = session._raw_request('POST', url, **kwargs)
         reason = 'http_429' if response.status_code == 429 else is_anti_bot_page(response)
         if reason:
@@ -124,6 +130,8 @@ def post_once(session, url, **kwargs):
         else:
             session._mark_ok('POST', url, response)
         return response
+    if before_send and not before_send():
+        raise SendCancelled()
     return session.post(url, **kwargs)
 
 
@@ -1236,7 +1244,7 @@ CUP_KNOWN = {
 }
 
 
-def choose_action(state, side, taunt_ids=(), hit_history=None, allow_secret=True):
+def choose_action_legacy(state, side, taunt_ids=(), hit_history=None, allow_secret=True):
     """Conservative legal one-step policy, not a full battle simulator."""
     other = 'defender' if side == 'attacker' else 'attacker'
     alive = lambda c: c.get('alive', True) and c.get('is_alive', True) and float(c.get('hp', 0)) > 0
@@ -1289,6 +1297,15 @@ def choose_action(state, side, taunt_ids=(), hit_history=None, allow_secret=True
             bait = min(own, key=lambda c: (float(c['hp']) / max(1.0, float(c.get('max_hp', 0))), int(c['card_user_id'])))
             return ('tactic', {'kind': 'secret', 'secret_type': 'trap', 'card_user_id': int(bait['card_user_id'])})
     return ('attack', {'from_card_user_id': int(attacker['card_user_id']), 'target_card_user_id': int(target['card_user_id'])})
+
+
+def choose_action(state, side, taunt_ids=(), hit_history=None, allow_secret=True):
+    baseline = choose_action_legacy(state, side, taunt_ids, hit_history, allow_secret)
+    from cup_tactics import choose
+    try:
+        return choose(state, side, baseline, hit_history, set(taunt_ids), DEFAULT_RULES)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return baseline
 
 
 class ManualArenaController:
@@ -1517,8 +1534,10 @@ class ManualArenaController:
                           for c in self.state.get('final', {}).get(s, [])] for s in ('attacker', 'defender')}
                 item = {'id': self.fight_id, 'observed_at': time.time(), 'own_side': side,
                       'is_win': self.state.get('winner_user_id') == uid, 'cards': cards, 'source': 'manual_opponent_cards'}
+                from combat_replay import capture_cup_trace
                 archived = dict(item, decisions=self.decisions[-300:], taunts=sorted(taunts),
-                                page_blocks=getattr(self, '_page_blocks', {}))
+                                page_blocks=getattr(self, '_page_blocks', {}),
+                                policy_version='cup-tactics-v2', **capture_cup_trace(self.state))
                 battle_store.record(battle_store.db_path(str(history_path.parent)), archived, 'cup')
                 history = [h for h in history if h.get('id') != self.fight_id] + [item]
                 temporary = history_path.with_suffix('.tmp')
@@ -1548,7 +1567,7 @@ class ManualArenaController:
                                        allow_secret=not self.secret_disabled)
                 if action:
                     kind, payload = action
-                    self.decisions.append({'state': self.state, 'kind': kind, 'payload': payload})
+                    self.decisions.append({'state': self.state, 'kind': kind, 'payload': payload, 'policy_version': 'cup-tactics-v2'})
                     self.pending = {'fight_id': self.fight_id, 'revision': revision, 'kind': kind, 'payload': payload}
                     self.save()
                     context = 'fight=' + self.fight_id + ' turn=' + str(self.state.get('turn')) + ' revision=' + str(revision) + ' kind=' + kind + ' cards=' + str(payload)
@@ -1710,6 +1729,411 @@ def inventory_from_api_card(card, original):
     return result
 
 
+REROLL_SETTING = 'awaken_reroll'  # {active, min_attack, min_health, min_crit, cards: [{card_user_id, name, status, ...}]}
+REROLL_DONE = ('reached', 'missing', 'refused')
+# Seal names and short effects as the site shows them (data-battle-seals-json)
+SEAL_INFO = {
+    1: ('Печать двойного удара', '30% шанс повторной атаки', 'rare'),
+    2: ('Печать ярости', '+30% атаки ниже 50% HP', 'common'),
+    3: ('Печать казни', '+35% урона по слабым', 'common'),
+    4: ('Печать берсерка', '+30% атаки после убийства', 'rare'),
+    5: ('Печать охотника', '+75% первый удар', 'common'),
+    6: ('Печать шипов', '30% урона обратно', 'rare'),
+    7: ('Печать регенерации', '7% HP после хода', 'common'),
+    8: ('Печать барьера', '-70% первый входящий урон', 'rare'),
+    9: ('Печать бессмертия', 'Выживает с 1 HP', 'epic'),
+    10: ('Печать мести', 'Урон после смерти', 'rare'),
+    11: ('Печать цепной атаки', '25% ударить ещё врага', 'epic'),
+    12: ('Печать вампиризма', '25% лечения от урона', 'rare'),
+    13: ('Печать феникса', '35% воскреснуть', 'legendary'),
+    14: ('Печать уворота', '20% шанс уклониться', 'epic'),
+    15: ('Печать провокации', '100% шанс стать целью', 'epic'),
+}
+REROLL_HOLD_SEC = 3  # a roll stays at least this long before it is discarded, so «Остановить» can keep it
+
+
+def card_stats(card):
+    return {'attack': int(float(card['battle_attack'])), 'health': int(float(card['battle_health'])),
+            'crit': int(float(card['battle_crit_chance'])), 'seal': card.get('battle_seal_id')}
+
+
+def stats_text(card):
+    s = card_stats(card)
+    seal = SEAL_INFO.get(s['seal'], ('',))[0]
+    return f"ATK {s['attack']}, HP {s['health']}, CR {s['crit']}%" + (f", {seal.lower()}" if seal else '')
+
+
+def reroll_meets(card, goal):
+    """Inventory card (battle_* stats) reaches every minimum the user set."""
+    return (float(card.get('battle_attack') or 0) >= float(goal.get('min_attack') or 0)
+            and float(card.get('battle_health') or 0) >= float(goal.get('min_health') or 0)
+            and float(card.get('battle_crit_chance') or 0) >= float(goal.get('min_crit') or 0))
+
+
+def reroll_odds(samples, goal):
+    """Share of past awakenings (each one an independent roll) that would have met the goal."""
+    rolls = [c for c in samples if c.get('battle_attack')]
+    if not rolls:
+        return None
+    return sum(reroll_meets(c, goal) for c in rolls) / len(rolls)
+
+
+def reroll_card_from_response(response, cid):
+    """Stats of the awakened card from the site answer, or None to fall back to the collection."""
+    api = response.get('card') if isinstance(response, dict) else None
+    if not isinstance(api, dict) or str(api.get('card_user_id')) != str(cid):
+        return None
+    try:
+        parsed = parse_roll_card(canonical_card(api))
+    except ValueError:
+        return None
+    return {'id': cid, 'battle_attack': parsed['attack'], 'battle_health': parsed['health'],
+            'battle_crit_chance': parsed['crit_chance'], 'battle_seal_id': canonical_card(api).get('battle_seal_id')}
+
+
+def note_awaken_energy(left):
+    """Remember how many awakenings are left, for the app's Awakening page."""
+    DataManager.set_setting('awaken_energy', {'left': int(left), 'at': time.time()})
+
+
+def reroll_energy_left(response):
+    """Awakenings left after this one, or None when the answer does not say (then the page is read)."""
+    try:
+        return int(response['awakening_energy']) + int(response.get('free_left') or 0)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+class AwakenRerollMixin:
+    """Awaken the chosen cards again and again until each one's stats reach the user's minimums.
+
+    Unawakening is free on the site; every awakening costs awakening energy, which arena
+    fights refill. The collection is the only truth: after every request the card is looked up
+    again, so a crash between request and answer never spends energy twice."""
+
+    def _reroll_card(self, route, item, awake, max_pages=10):
+        for page in range(1, max_pages + 1):
+            data = self.management_post(route, {'search': item['name'], 'is_battle': awake, 'per_page': 70, 'page': page})
+            rows = data.get('data')
+            if not isinstance(rows, list):
+                raise ValueError('Inventory shape changed')
+            found = [c for c in rows if int(c['id']) == int(item['card_user_id'])]
+            if found:
+                if int(found[0].get('in_trade') or 0):
+                    raise ValueError('Card is in a trade')
+                return found[0]
+            if not data.get('next_page_url'):
+                return None
+        return None
+
+    def _reroll_energy(self):
+        _, root = self.management_page('/battle/awakening', '.battle-awakening')
+
+        def count(selector):
+            return int(re.sub(r'\D', '', root.select_one(selector).get_text()) or 0)
+        left = count('[data-awakening-free-left]') + count('[data-awakening-energy]')
+        note_awaken_energy(left)
+        return root['data-awakening-url'], left
+
+    def _reroll_refresh_cache(self, cid, card):
+        """Put the latest roll into the cached collection the app lists cards from."""
+        cards = self.management_state().get('inventory') or []
+        for c in cards:
+            if int(c['id']) == int(cid):
+                c.update({k: card[k] for k in ('battle_attack', 'battle_health', 'battle_crit_chance', 'battle_seal_id')
+                          if card.get(k) is not None})
+                self.management_save({'inventory': cards})
+                return
+
+    def _reroll_update(self, cid, **values):
+        """Change one card in what is stored now: «Стоп» or a new list chosen in the app must not be overwritten."""
+        latest = DataManager.get_setting(REROLL_SETTING) or {}
+        cards = latest.get('cards') or []
+        for item in cards:
+            if int(item['card_user_id']) == int(cid):
+                item.update(values)
+                DataManager.set_setting(REROLL_SETTING, latest)
+                return item
+        return None
+
+    def _reroll_restore_deck(self):
+        """Unawakening drops a card from the active deck: put the remembered deck back."""
+        saved = self.management_state().get('reroll_deck')
+        if not saved:
+            return
+        _, decks = self.management_page('/battle/decks', '.battle-decks')
+        payload = {'deck_id': saved['deck_id']}
+        payload.update({f'card_user_ids[{i}]': cid for i, cid in enumerate(saved['ids'])})
+        endpoint = same_site_route(decks.get('data-save-url'), '/battle/decks/save-cards')
+        if self._arena_post(endpoint, payload):
+            self.management_save({'reroll_deck': None})
+        else:
+            self.log('⚠️ Перебор пробуждения: не удалось вернуть карты в колоду — проверь колоду на сайте.')
+
+    def _reroll_remember_deck(self, cid):
+        if self.management_state().get('reroll_deck'):
+            return
+        _, decks = self.management_page('/battle/decks', '.battle-decks')
+        active = decks.select_one('.battle-decks__deck--active[data-deck-id]')
+        ids = [int(i['data-card-user-id']) for i in active.select('img[data-card-user-id]')] if active else []
+        if cid in ids:
+            self.management_save({'reroll_deck': {'deck_id': active['data-deck-id'], 'ids': ids}})
+
+    def _reroll_still_wanted(self, cid):
+        latest = DataManager.get_setting(REROLL_SETTING) or {}
+        item = next((c for c in latest.get('cards') or [] if int(c['card_user_id']) == cid), None)
+        if not latest.get('active') or item is None or item.get('status') in REROLL_DONE:
+            return None  # stopped or the card was dropped from the list in the app meanwhile
+        return latest
+
+    def _reroll_one(self, route, unawaken_url, item, budget):
+        """Roll one card. Returns (rolls spent, out_of_energy_or_stopped)."""
+        cid = int(item['card_user_id'])
+        card = self._reroll_card(route, item, 1)
+        if card is None and self._reroll_card(route, item, -1) is None:
+            self._reroll_update(cid, status='missing')
+            self.log(f"⚠️ Перебор пробуждения: карта «{item['name']}» #{cid} не найдена в коллекции — пропускаю.")
+            return 0, False
+        rolls, energy, awaken_url, rolled_at = 0, None, None, None
+        while rolls < budget and self._alive():
+            goal = self._reroll_still_wanted(cid)
+            if goal is None:
+                return rolls, True
+            if card is not None and reroll_meets(card, goal):
+                self._reroll_update(cid, status='reached', result=card_stats(card))
+                reached = getattr(self, 'on_reroll_reached', None)  # Buffy: Windows notification
+                if reached:
+                    reached(item['name'], stats_text(card))
+                self.log(f"🎲 Перебор пробуждения: «{item['name']}» {stats_text(card)} — цель достигнута, оставил.")
+                self.notifier.notify_alert('перебор пробуждения',
+                                           f"«{item['name']}» выбила {stats_text(card)}. Цель достигнута, карта оставлена.")
+                return rolls, False
+            if energy is None:
+                awaken_url, energy = self._reroll_energy()
+            if energy <= 0:  # checked before unawakening: never leave a card plain
+                return rolls, True
+            if card is not None:
+                self._reroll_remember_deck(cid)
+                # Give the person time to see this roll and press «Остановить» before it is discarded
+                while rolled_at is not None and time.monotonic() - rolled_at < REROLL_HOLD_SEC:
+                    if self._reroll_still_wanted(cid) is None:
+                        return rolls, True
+                    time.sleep(0.25)
+                self.management_save({'reroll_pending': 'unawaken'})
+                try:
+                    # Pairs, not {'card_user_ids[]': [cid]}: curl_cffi urlencodes a dict without doseq and sends "[cid]" (HTTP 422)
+                    self.management_post(unawaken_url, [('card_user_ids[]', cid), ('confirmed', 1)], mutation=True,
+                                         before_send=lambda: self._reroll_still_wanted(cid) is not None)
+                except SendCancelled:  # «Остановить» came during the request spacing: the card stays as it is
+                    self.management_save({'reroll_pending': None})
+                    return rolls, True
+                except ValueError as e:
+                    if 'HTTP 422' not in str(e):
+                        raise
+                    # The site refuses this card (locked, in a squad it guards, ...): skip it, go on with the rest
+                    self.management_save({'reroll_pending': None})
+                    reason = str(e).split(':', 1)[-1].strip() or 'сайт отказал'
+                    self._reroll_update(cid, status='refused', reason=reason[:160])
+                    self.log(f"⚠️ Перебор пробуждения: сайт не даёт снять пробуждение с «{item['name']}» ({reason}) — пропускаю.")
+                    return rolls, False
+                # No collection check here: if unawakening silently failed, the site refuses to
+                # awaken an awakened card and the series stops on that error
+            self.management_save({'reroll_pending': 'awaken'})
+            response = self.management_post(awaken_url, {'card_user_id': cid}, mutation=True)
+            # The answer carries the new stats and the energy left: two requests per roll instead of six
+            card = reroll_card_from_response(response, cid) or self._reroll_card(route, item, 1)
+            if card is None:
+                raise ValueError('Awakening not confirmed by the collection')
+            energy = reroll_energy_left(response)
+            if energy is not None:
+                note_awaken_energy(energy)
+            rolled_at = time.monotonic()
+            self.management_save({'reroll_pending': None})
+            rolls += 1
+            done = int(item.get('attempts') or 0) + 1
+            item = self._reroll_update(cid, attempts=done, status='running',
+                                       history=(item.get('history') or [])[-29:] + [card_stats(card)]) or item
+            self.log(f"🎲 Перебор пробуждения «{item['name']}» #{done}: {stats_text(card)}")
+        return rolls, rolls >= budget
+
+    def run_awaken_reroll(self, max_rolls=20):
+        goal = DataManager.get_setting(REROLL_SETTING) or {}
+        if not goal.get('active') or 19 <= self._msk_now().hour < 22:  # never touch the deck during the cup
+            return 0
+        _, root = self.management_page('/battle/unawaken', '.battle-unawaken')
+        route = urljoin('https://mangabuff.ru', root.select_one('.card-filter-form[data-url]')['data-url'])
+        unawaken_url = root['data-unawaken-url']
+        self.management_save({'reroll_pending': None})  # each card is re-read from the collection below
+        rolls = 0
+        try:
+            for item in goal.get('cards') or []:
+                if item.get('status') in REROLL_DONE:
+                    continue
+                spent, paused = self._reroll_one(route, unawaken_url, item, max_rolls - rolls)
+                rolls += spent
+                if paused:
+                    break
+            latest = DataManager.get_setting(REROLL_SETTING) or {}
+            cards = latest.get('cards') or []
+            if latest.get('active') and cards and all(c.get('status') in REROLL_DONE for c in cards):
+                DataManager.set_setting(REROLL_SETTING, {**latest, 'active': False})
+                self.log('🎲 Перебор пробуждения: все выбранные карты готовы.')
+            elif rolls and latest.get('active'):
+                self.log('🎲 Перебор пробуждения: энергия кончилась — продолжу, когда бои её накопят.')
+            return rolls
+        finally:
+            try:
+                self._reroll_restore_deck()
+            except Exception as e:  # must not hide the error that got us here
+                self.log(f'⚠️ Перебор пробуждения: колоду проверю в следующем цикле ({e}).')
+            for c in (DataManager.get_setting(REROLL_SETTING) or {}).get('cards') or []:
+                last = c.get('result') or (c.get('history') or [None])[-1]
+                if last:
+                    self._reroll_refresh_cache(c['card_user_id'], {
+                        'battle_attack': last['attack'], 'battle_health': last['health'],
+                        'battle_crit_chance': last['crit'], 'battle_seal_id': last.get('seal')})
+
+
+# Seal meta from 3555 arena and cup fights (Oct 2026): share of opponent cards with the seal, and how much
+# it moved their win rate beyond what deck strength predicts. "" = within noise. Deck strength matters far more.
+SEAL_META = {
+    'regeneration': (25.5, 2.3, 'сильнее'), 'vampirism': (21.6, 0.9, ''), 'rage': (8.5, -1.1, ''),
+    'hunter': (7.3, -2.8, ''), 'execution': (6.4, -3.7, 'слабее'), 'berserk': (4.5, -6.6, 'слабее'),
+    'thorns': (4.2, 3.6, ''), 'dodge': (4.2, 1.5, ''), 'double_strike': (4.1, -1.7, ''), 'revenge': (3.9, -3.3, ''),
+    'barrier': (3.8, -1.0, ''), 'immortality': (2.7, -0.8, ''), 'phoenix': (1.3, -3.6, ''),
+    'taunt': (1.1, -9.6, 'слабее'), 'chain_attack': (1.0, -5.2, ''),
+}
+SEAL_SETTING = 'seal_reroll'  # {active, seals: [ids], max_essence, spent, cards: [{card_user_id, name, status, ...}]}
+SEAL_REROLL_COST = 500
+
+
+def note_essence(left):
+    DataManager.set_setting('reroll_essence', {'left': int(left), 'at': time.time()})
+
+
+def _digits(text):
+    return int(re.sub(r'\D', '', str(text)) or 0)
+
+
+class SealRerollMixin:
+    """Reforge the seal of chosen awakened cards until it is one of the wanted seals.
+
+    Each reforge costs essence (500) and keeps attack, HP and crit; the bot checks that and stops
+    on any change. Never spends past the user's essence limit."""
+
+    def _seal_wanted(self, cid):
+        latest = DataManager.get_setting(SEAL_SETTING) or {}
+        item = next((c for c in latest.get('cards') or [] if int(c['card_user_id']) == cid), None)
+        if not latest.get('active') or item is None or item.get('status') in REROLL_DONE:
+            return None
+        return latest
+
+    def _seal_update(self, cid, **values):
+        latest = DataManager.get_setting(SEAL_SETTING) or {}
+        for item in latest.get('cards') or []:
+            if int(item['card_user_id']) == int(cid):
+                item.update(values)
+                DataManager.set_setting(SEAL_SETTING, latest)
+                return item
+        return None
+
+    def run_seal_reroll(self, max_rolls=40):
+        goal = DataManager.get_setting(SEAL_SETTING) or {}
+        if not goal.get('active') or 19 <= self._msk_now().hour < 22:
+            return 0
+        _, root = self.management_page('/battle/reroll', '.battle-reroll')
+        seal_url, card_url = root['data-reroll-seal-url'], root['data-reroll-card-url']
+        essence = _digits(root.select_one('[data-reroll-essence]').get_text())
+        note_essence(essence)
+        self.management_save({'seal_pending': None})
+        rolls = 0
+        for item in goal.get('cards') or []:
+            if item.get('status') in REROLL_DONE:
+                continue
+            cid = int(item['card_user_id'])
+            stats_goal = DataManager.get_setting(REROLL_SETTING) or {}
+            if stats_goal.get('active') and any(int(c['card_user_id']) == cid and c.get('status') not in REROLL_DONE
+                                                for c in stats_goal.get('cards') or []):
+                continue  # finishes the stats reroll first; the seal is reforged afterwards
+            try:
+                card = self.management_post(card_url, {'card_user_id': cid}).get('card') or {}
+            except ValueError:
+                card = {}
+            if str(card.get('card_user_id')) != str(cid):
+                self._seal_update(cid, status='missing')
+                self.log(f"⚠️ Перековка печати: «{item['name']}» #{cid} не найдена среди пробуждённых — пропускаю.")
+                continue
+            rolled_at, paused = None, False
+            while rolls < max_rolls and self._alive():
+                latest = self._seal_wanted(cid)
+                if latest is None:
+                    return rolls
+                seal = seal_id((card.get('seal') or {}).get('name')) if isinstance(card.get('seal'), dict) \
+                    else card.get('battle_seal_id')
+                stats = {'attack': int(float(card['attack'])), 'health': int(float(card['health'])),
+                         'crit': int(float(card['crit_chance'])), 'seal': seal}
+                if seal in {int(s) for s in latest.get('seals') or []}:
+                    self._seal_update(cid, status='reached', result=stats)
+                    text = f"«{item['name']}» получила {SEAL_INFO.get(seal, ('печать',))[0].lower()}"
+                    self.log(f'🔮 Перековка печати: {text} — оставил.')
+                    self.notifier.notify_alert('перековка печати', text + '.')
+                    reached = getattr(self, 'on_reroll_reached', None)
+                    if reached:
+                        reached(item['name'], SEAL_INFO.get(seal, ('печать',))[0].lower())
+                    break
+                limit = int(latest.get('max_essence') or 0)
+                if essence < SEAL_REROLL_COST or (limit and int(latest.get('spent') or 0) + SEAL_REROLL_COST > limit):
+                    self.log('🔮 Перековка печати: эссенция кончилась или достигнут лимит — жду.')
+                    return rolls
+                while rolled_at is not None and time.monotonic() - rolled_at < REROLL_HOLD_SEC:
+                    if self._seal_wanted(cid) is None:
+                        return rolls
+                    time.sleep(0.25)
+                self.management_save({'seal_pending': cid})
+                try:
+                    response = self.management_post(seal_url, {'card_user_id': cid}, mutation=True,
+                                                    before_send=lambda: self._seal_wanted(cid) is not None)
+                except SendCancelled:
+                    self.management_save({'seal_pending': None})
+                    return rolls
+                except ValueError as e:
+                    if 'HTTP 422' not in str(e):
+                        raise
+                    self.management_save({'seal_pending': None})
+                    reason = str(e).split(':', 1)[-1].strip() or 'сайт отказал'
+                    self._seal_update(cid, status='refused', reason=reason[:160])
+                    self.log(f"⚠️ Перековка печати: сайт не даёт перековать «{item['name']}» ({reason}) — пропускаю.")
+                    break
+                new = response.get('card') or {}
+                if str(new.get('card_user_id')) != str(cid):
+                    raise ValueError('Seal reforge answered for another card')
+                if any(int(float(new[k])) != stats[s] for k, s in (('attack', 'attack'), ('health', 'health'),
+                                                                    ('crit_chance', 'crit'))):
+                    raise ValueError('Seal reforge changed attack, HP or crit — stopped')
+                cost = _digits(response.get('cost') or SEAL_REROLL_COST)
+                essence = _digits(response.get('essence')) if response.get('essence') is not None else essence - cost
+                note_essence(essence)
+                self.management_save({'seal_pending': None})
+                card, rolls, rolled_at = new, rolls + 1, time.monotonic()
+                new_seal = seal_id((new.get('seal') or {}).get('name'))
+                item = self._seal_update(cid, attempts=int(item.get('attempts') or 0) + 1, status='running',
+                                         history=(item.get('history') or [])[-29:] + [new_seal]) or item
+                spent = int((DataManager.get_setting(SEAL_SETTING) or {}).get('spent') or 0) + cost
+                DataManager.set_setting(SEAL_SETTING, {**(DataManager.get_setting(SEAL_SETTING) or {}), 'spent': spent})
+                self.log(f"🔮 Перековка печати «{item['name']}» #{item['attempts']}: "
+                         f"{SEAL_INFO.get(new_seal, ('?',))[0]} (эссенции осталось {essence})")
+            else:
+                paused = True
+            if paused:
+                break
+        latest = DataManager.get_setting(SEAL_SETTING) or {}
+        cards = latest.get('cards') or []
+        if latest.get('active') and cards and all(c.get('status') in REROLL_DONE for c in cards):
+            DataManager.set_setting(SEAL_SETTING, {**latest, 'active': False})
+            self.log('🔮 Перековка печати: все выбранные карты готовы.')
+        return rolls
+
+
 class ArenaManagementMixin:
     def management_state(self):
         return DataManager.load_json(MANAGEMENT_FILE)
@@ -1727,10 +2151,11 @@ class ArenaManagementMixin:
             raise ValueError('Required arena page unavailable: ' + path)
         return soup, root
 
-    def management_post(self, url, data, mutation=False):
+    def management_post(self, url, data, mutation=False, before_send=None):
         url = same_site_route(url, '/')
         headers = {'X-CSRF-TOKEN': self.csrf_token, 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json', 'Referer': 'https://mangabuff.ru/battle'}
-        send = post_once if mutation else lambda s, u, **kw: s.post(u, **kw)
+        send = (lambda s, u, **kw: post_once(s, u, before_send=before_send, **kw)) if mutation \
+            else lambda s, u, **kw: s.post(u, **kw)
         response = send(self.session, url, data=data, headers=headers, timeout=15)
         if response.status_code != 200 or is_anti_bot_page(response):
             detail = ''
@@ -2209,7 +2634,7 @@ def legal_replacement(current_ids, cards, banned_id):
     return chosen
 
 
-class ArenaAutomationMixin(ArenaManagementMixin):
+class ArenaAutomationMixin(ArenaManagementMixin, AwakenRerollMixin, SealRerollMixin):
     def evaluate_arena_replacement(self, current, cards, banned, current_energy=None):
         battles = recent_battles(load_observations(os.path.join(BASE_DIR, 'arena_observations.json')))
         if battles and not supported_definitions(battles):
@@ -2360,6 +2785,14 @@ class ArenaAutomationMixin(ArenaManagementMixin):
     def run_arena_cycle(self):
         self.claim_battle_chests()
         self.check_and_claim_quests()
+        try:
+            self.run_awaken_reroll()
+        except Exception as e:  # never let it stop the fights
+            self.log(f'⚠️ Перебор пробуждения остановлен на этом цикле: {e}')
+        try:
+            self.run_seal_reroll()
+        except Exception as e:
+            self.log(f'⚠️ Перековка печати остановлена на этом цикле: {e}')
         if not DataManager.get_setting('battles_enabled', True):
             return
         today = self._msk_now().date()

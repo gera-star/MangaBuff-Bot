@@ -4,6 +4,11 @@ from bs4 import BeautifulSoup
 from config import CONFIG, TARGET_RARITIES, BASE_DIR
 import re
 import json
+import uuid
+from html import unescape
+from urllib.parse import urljoin
+from profile_theme import skin_classes, skin_variables, stylesheet_urls, theme_from_variables
+from diagnostics import mask_secrets, reading_response_details
 from utils import (
     parse_smart_number,
     safe_cookies_to_dict,
@@ -68,6 +73,15 @@ EVENT_CANDY_DROPS = 35  # "до 35 раз в сутки, раз в 3 минут�
 def event_candy_day(today):
     day = DataManager.get_setting("halloween_candy_day") or {}
     return day if day.get("date") == str(today) else {"date": str(today), "n": 0, "misses": 0}
+
+
+def rerolled_out_of_squad(page_ids, saved_ids):
+    """The site's squad lacks cards that only the awakening reroll removed (unawakening drops them)."""
+    missing = set(saved_ids) - set(page_ids)
+    if not missing or not set(page_ids) <= set(saved_ids):
+        return False
+    rerolled = {int(c["card_user_id"]) for c in (DataManager.get_setting("awaken_reroll") or {}).get("cards") or []}
+    return missing <= rerolled
 
 
 def tower_downtime_hours(now_msk, hours, cup=True):
@@ -391,9 +405,6 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
             res.status_code == 200 and ("/login" in str(res.url).lower() or "auth-form" in res.text.lower()))
         if not logged_out:
             return True  # fine, or the site itself is down (5xx): logging in again would not help
-        if DataManager.get_setting("auth_method") == "social" and not self.password:
-            self.log("⚠️ Сессия входа через соцсеть истекла. Открой 2R2R → «Сменить аккаунт» и войди снова.")
-            return False
         self.log("♻️ Сайт сбросил вход в аккаунт — вхожу заново")
         return self.login_and_steal_keys()
 
@@ -402,24 +413,110 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
         if time.time() - getattr(self, "_last_419_relogin", 0) < 60:
             return self.csrf_token
         self._last_419_relogin = time.time()
-        if DataManager.get_setting("auth_method") == "social" and not self.password:
-            self.log("⚠️ Сессия соцавторизации устарела. Повтори вход через соцсеть в 2R2R.")
-            return None
         self.log("♻️ Сайт ответил 419 (сессия устарела) — вхожу заново и повторяю действие")
         return self.csrf_token if self.login_and_steal_keys() else None
 
-    def login_and_steal_keys(self):
-        self.login_rejected = False  # True when the site answered and refused the email/password
-        if not (self.email and self.password):
-            if DataManager.get_setting("auth_method") == "social":
-                self.auth_log_buffer.append(
-                    "Сохранён вход через соцсеть, но сессия уже недействительна. "
-                    "Повтори вход через соцсеть в окне 2R2R."
-                )
-            else:
-                self.auth_log_buffer.append("Для входа нужны почта и пароль MangaBuff.")
+    def adopt_cookie_session(self):
+        """Check the cookies already in self.session on /balance; on success take its CSRF token
+        and user id and save the session. True = logged in, False = guest, None = site unreachable."""
+        res = self.session.get("https://mangabuff.ru/balance", timeout=10)
+        if res.status_code in (401, 419) or (res.status_code == 200 and (
+                "/login" in str(res.url).lower() or "auth-form" in res.text.lower())):
             return False
+        meta = BeautifulSoup(res.text, "html.parser").find("meta", attrs={"name": "csrf-token"})
+        if res.status_code != 200 or not meta or not meta.get("content"):
+            return None
+        self.csrf_token = meta.get("content")
+        self.session.headers.update({"X-CSRF-TOKEN": self.csrf_token, "X-Requested-With": "XMLHttpRequest",
+                                     "Referer": "https://mangabuff.ru/mine", "Origin": "https://mangabuff.ru"})
+        user = re.search(r"/users/(\d+)", res.text)
+        if user:
+            self.user_id = user.group(1)
+        self._persist_session_cookies()
+        return True
+
+    def refresh_profile(self):
+        """Save nickname, avatar and cover from the site profile for Buffy's account card (cosmetic: never raises)."""
+        try:
+            if not self.user_id:
+                found = re.search(r"/users/(\d+)", self.session.get("https://mangabuff.ru/balance", timeout=10).text)
+                if not found:
+                    return None
+                self.user_id = found.group(1)
+            res = self.session.get(f"https://mangabuff.ru/users/{self.user_id}", timeout=15)
+            name = re.search(r'class="profile__name" data-name="([^"]*)"', res.text) if res.status_code == 200 else None
+            if not name:
+                return None
+
+            def media(pattern):
+                found = re.search(pattern, res.text)
+                return urljoin("https://mangabuff.ru/", found.group(1)) if found else None
+
+            profile = {
+                **self._profile_theme(res.text),
+                "id": self.user_id,
+                "name": unescape(name.group(1)),
+                "avatar": media(r'class="profile__avatar">\s*<img src="([^"]+)"'),  # often an animated gif
+                "cover": media(r"class=\"profile__background\" style=\"background-image: url\('([^']+)'\)"),
+                "cover_video": media(r'class="profile__cover"[^>]*>\s*<source src="([^"]+)"'),
+            }
+            DataManager.set_setting("account_profile", profile)
+            return profile
+        except Exception:
+            return None
+
+    def _profile_theme(self, page_html):
+        """App colours from the profile skin. The site CSS is ~3 MB, so it is read again
+        only when the skin or the site's stylesheet version changes."""
+        skins, sheets = skin_classes(page_html), stylesheet_urls(page_html)
+        key = "|".join(skins + sheets)
+        old = DataManager.get_setting("account_profile") or {}
+        if old.get("theme_key") == key:
+            return {"theme": old.get("theme") or {}, "theme_key": key}
+        try:
+            css = [self.session.get(urljoin("https://mangabuff.ru/", url), timeout=30).text
+                   for url in sheets] if skins else []
+            return {"theme": theme_from_variables(skin_variables(css, skins)), "theme_key": key}
+        except Exception:
+            return {"theme": old.get("theme") or {}, "theme_key": old.get("theme_key")}
+
+    def use_cookies(self, cookies, user_agent=None):
+        load_cookies_into(self.session, cookies)
+        if user_agent:
+            self.user_agent = user_agent
+            self.session.headers["User-Agent"] = user_agent
+
+    def _restore_social_session(self):
+        """VK/Discord/Yandex/Google accounts have no password: reuse the cookies from Buffy's sign-in window,
+        and when they died, ask Buffy to sign in again through that window (silently if the provider allows)."""
+        self.login_rejected = False
+        try:
+            alive = self.adopt_cookie_session() if self.validate_session() else False
+            relogin = getattr(self, "social_relogin", None)  # set by Buffy; the CLI has no window
+            if alive is False and relogin:
+                fresh = relogin()
+                if fresh:
+                    self.use_cookies(*fresh)
+                    alive = self.adopt_cookie_session()
+        except Exception as e:
+            self.auth_log_buffer.append(tr("log_login_crash", e=e))
+            return False
+        if alive:
+            self.auth_log_buffer.append(tr("log_login_ok"))
+            return True
+        if alive is None:
+            self.auth_log_buffer.append("⚠️ MangaBuff не ответил, вход через соцсеть проверю позже")
+            return False
+        self.login_rejected = True
+        self.auth_log_buffer.append(
+            "❌ Вход через соцсеть устарел: открой Buffy → Настройки → «Сменить аккаунт» и войди заново")
+        return False
+
+    def login_and_steal_keys(self):
+        if DataManager.get_setting("login_method") == "social":
+            return self._restore_social_session()
         self.auth_log_buffer.append("Logging in via API...")
+        self.login_rejected = False  # True when the site answered and refused the email/password
         try:
             self.session.cookies.clear()
         except Exception:
@@ -1363,7 +1460,9 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
 
     def read_manga_chapters(self, target_count=None, for_event=False):
         """Read manga chapters to farm bonus cards, sharpening scrolls, and 75-chapter daily quest."""
-        self._last_read_count = 0  # chapters the site accepted in this call
+        # Below the daily cap count only growth confirmed by /balance.
+        # At the cap it cannot grow; retain submitted reads for card/event pacing.
+        self._last_read_count = 0
         if not DataManager.get_setting("reading_enabled", True):
             return
 
@@ -1410,6 +1509,9 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
         progress_map = state.get("progress", {})
 
         manga_list = self.get_popular_manga_slugs()
+        if not manga_list:
+            self.log("⚠️ Нет доступных тайтлов для чтения — повторю позже.")
+            return False
         current_manga = state.get("current_manga", "elised")
         if current_manga in manga_list:
             manga_idx = manga_list.index(current_manga)
@@ -1421,9 +1523,12 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
         cards_gained_session = 0
         scrolls_gained_session = 0
         buffer = []
+        reading_run = uuid.uuid4().hex[:12]
+        reading_batch = 0
 
         try:
             attempts = 0
+            stalled_titles = 0
             while chapters_read_session < target_count and self._alive() and attempts < len(manga_list):
                 self._touch_heartbeat()
                 current_slug = manga_list[manga_idx % len(manga_list)]
@@ -1531,6 +1636,8 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
 
                 skip_bad = 0
                 stale_site_batches = 0
+                title_stalled = False
+                title_credited = False
                 site_chapters_before = (stats or {}).get("chapters_read")
                 for vol, ch, ch_url in unread_chapters:
                     if chapters_read_session >= target_count or not self._alive():
@@ -1551,6 +1658,10 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                             self.log(f"⚠️ Слишком много HTTP-ошибок глав в «{current_slug}», переключаюсь.")
                             break
                         continue
+
+                    if re.search(r"window\.isAuth\s*=\s*(?:0|false)\s*;", ch_res.text):
+                        self.log("⚠️ Глава открылась как гостю — чтение приостановлено до восстановления входа.")
+                        return False
 
                     m_ch = re.search(r"window\.current_chapter\s*=\s*({[^;]+});", ch_res.text)
                     if not m_ch:
@@ -1602,7 +1713,8 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                     })
 
                     # Batch submit (every 1-2 chapters)
-                    if len(buffer) >= 2 or (chapters_read_session + len(buffer)) >= target_count:
+                    if (len(buffer) >= 2 or (chapters_read_session + len(buffer)) >= target_count
+                            or ch_url == unread_chapters[-1][2]):
                         payload = {}
                         for bi, b_item in enumerate(buffer):
                             payload[f"items[{bi}][manga_id]"] = b_item["manga_id"]
@@ -1617,6 +1729,8 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                         }
 
                         try:
+                            reading_batch += 1
+                            request_started = time.monotonic()
                             post_res = self.session.post(
                                 "https://mangabuff.ru/addHistory?r=702",
                                 data=payload,
@@ -1624,9 +1738,17 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                                 timeout=10
                             )
                         except Exception as e:
-                            self.log(f"⚠️ addHistory fail: {e}")
-                            buffer.clear()
-                            continue
+                            self.log(f"⚠️ addHistory fail run={reading_run} batch={reading_batch}: {mask_secrets(str(e))}")
+                            # An ambiguous response is not permission to skip ahead.
+                            return False
+
+                        secrets = (*DataManager.get_credentials(), DataManager.get_setting('proxy', ''))
+                        self.log('🔎 reading_response ' + json.dumps({
+                            'run': reading_run, 'batch': reading_batch,
+                            'chapters': [{'manga': b['slug'], 'vol': b['vol'], 'ch': b['ch']} for b in buffer],
+                            'elapsed_ms': round((time.monotonic() - request_started) * 1000),
+                            'response': reading_response_details(post_res, secrets),
+                        }, ensure_ascii=False))
 
                         # Handle rate limit (429) backoff — do NOT count as read
                         if post_res.status_code == 429:
@@ -1645,8 +1767,42 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                             return False
 
                         if post_res.status_code == 200:
-                            chapters_read_session += len(buffer)
+                            # The reader accepts empty/text responses when no reward
+                            # drops. Reject HTML/login pages and explicit API errors;
+                            # /balance below verifies actual daily credit separately.
+                            body = post_res.text.strip()
+                            if body.startswith("<"):
+                                self.log("⚠️ addHistory вернул HTML вместо ответа API — повторю позже.")
+                                return False
+                            try:
+                                resp_data = json.loads(body) if body else None
+                            except (ValueError, TypeError):
+                                resp_data = None
+                            if (resp_data is False or (isinstance(resp_data, dict) and
+                                    (resp_data.get("success") is False or resp_data.get("error")
+                                     or resp_data.get("status") == "error"))):
+                                self.log("⚠️ Сайт отклонил запись истории — прогресс не изменён, повторю позже.")
+                                return False
+
+                            live = self.get_reading_stats()
+                            credited = 0
+                            if live:
+                                if site_chapters_before >= stats["chapters_max"]:
+                                    credited = len(buffer)
+                                else:
+                                    credited = min(len(buffer), max(0, live["chapters_read"] - site_chapters_before))
+                            chapters_read_session += credited
+                            title_credited = title_credited or credited > 0
                             self._last_read_count = chapters_read_session
+                            self.log('🔎 reading_credit ' + json.dumps({
+                                'run': reading_run, 'batch': reading_batch,
+                                'before': site_chapters_before,
+                                'after': live['chapters_read'] if live else None,
+                                'cap': stats['chapters_max'], 'counted': credited,
+                                'count_mode': 'submitted_at_cap' if site_chapters_before >= stats['chapters_max'] else 'daily_delta',
+                            }, ensure_ascii=False))
+                            # Keep the submitted cursor even for re-reads; otherwise
+                            # accounts with missing local history retry the same chapters.
                             for b in buffer:
                                 if b["url"] not in read_history:
                                     history_order.append(b["url"])
@@ -1661,7 +1817,6 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
 
                             # Parse drop responses
                             try:
-                                resp_data = post_res.json()
                                 if isinstance(resp_data, dict) and resp_data.get("token") and resp_data.get("type"):
                                     self._take_event_drop(resp_data, headers)
                                 if isinstance(resp_data, dict) and resp_data.get("name"):
@@ -1745,7 +1900,6 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
 
                             # Process the addHistory reward first: a capped chapter
                             # counter cannot tell us whether the card roll succeeded.
-                            live = self.get_reading_stats()
                             if not live:
                                 self.log("⚠️ Статистика после чтения недоступна — продолжу в следующем цикле.")
                                 buffer.clear()
@@ -1761,24 +1915,38 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                             elif site_chapters_before is not None and now_ch <= site_chapters_before:
                                 stale_site_batches += 1
                                 if stale_site_batches >= 2:
-                                    self.log("🛑 Сайт не засчитывает новые главы до лимита — продолжу в следующем цикле.")
+                                    self.log(
+                                        f"📖 «{current_slug}»: две пачки без роста счётчика "
+                                        f"({now_ch}/{now_cap}); возможно, главы уже прочитаны. Беру другой тайтл."
+                                    )
+                                    title_stalled = True
                                     buffer.clear()
-                                    return False
+                                    break
                             else:
                                 stale_site_batches = 0
                             site_chapters_before = now_ch
 
-                            self.log(tr("log_reading_batch", count=chapters_read_session, current=chapters_read_session, total=target_count))
+                            if credited:
+                                self.log(tr("log_reading_batch", count=chapters_read_session, current=chapters_read_session, total=target_count))
+                            else:
+                                self.log(f"📖 История отправлена, но счётчик глав пока не вырос ({now_ch}/{now_cap}).")
 
                         else:
                             self.log(f"⚠️ Ошибка отправки истории (HTTP {post_res.status_code})")
+                            return False
                         buffer.clear()
 
-                if skip_bad >= 25:
+                if chapters_read_session < target_count and self._alive():
                     manga_idx = (manga_idx + 1) % len(manga_list)
                     state["current_manga"] = manga_list[manga_idx]
                     state["manga_idx"] = manga_idx
                     DataManager.save_reading_state(state)
+                # A trailing stale batch after real growth is not a stalled title.
+                if title_stalled or (stale_site_batches and not title_credited):
+                    stalled_titles += 1
+                    if stalled_titles >= 2:
+                        self.log("🛑 На двух тайтлах нет роста счётчика. Чтение приостановлено; следующий цикл начну с другого тайтла.")
+                        return False
 
             state["current_manga"] = manga_list[manga_idx % len(manga_list)]
             state["manga_idx"] = manga_idx
@@ -2579,10 +2747,11 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                         if cid and str(cid).isdigit() and int(cid) not in card_ids:
                             card_ids.append(int(cid))
 
+                saved_squad = [int(x) for x in DataManager.get_setting("tower_squad") or [] if str(x).isdigit()][:4]
                 if not card_ids:
-                    saved_squad = DataManager.get_setting("tower_squad")
-                    if isinstance(saved_squad, list) and len(saved_squad) > 0:
-                        card_ids = [int(x) for x in saved_squad if str(x).isdigit()][:4]
+                    card_ids = saved_squad
+                elif rerolled_out_of_squad(card_ids, saved_squad):
+                    card_ids = saved_squad  # the awakening reroll took a card out of the squad on the site
 
                 if card_ids:
                     DataManager.set_setting("tower_squad", card_ids)
@@ -3437,11 +3606,7 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                     "не удаётся войти на MangaBuff",
                     f"Причина: {escape(str(reason))}\n"
                     f"Попытка {attempt}, следующая через ~{wait_min} мин.\n"
-                    + (
-                        "Повтори вход через соцсеть в 2R2R → «Сменить аккаунт»."
-                        if DataManager.get_setting("auth_method") == "social"
-                        else "Проверь логин/пароль в user_data.json или прокси."
-                    ),
+                    "Проверь логин/пароль в user_data.json или прокси.",
                 )
             wait_sec = wait_min * 60 + random.randint(10, 60)
             self._persist_panel_state(next_action="Повторный вход в аккаунт", next_wait_sec=wait_sec)
@@ -3513,6 +3678,8 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
         "reading": ("Чтение глав", 20 * 60),
         "club": ("Клуб", 4 * 60),
         "seasonal": ("Ивенты", 2 * 60),
+        "awaken": ("Перебор пробуждения", 15 * 60),
+        "seals": ("Перековка печати", 15 * 60),
     }
 
     def request_manual_module(self, name):
@@ -3590,6 +3757,21 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                 return f"{visit}, награда дня забрана"
             reward = "награда дня забрана" if self.daily_reward_claimed else "награду дня забрать не получилось"
             return ManualFailed(f"{visit}; {reward}. Работающий бот повторит сам, или запусти ещё раз позже")
+        if name == "seals":
+            rolls = self.run_seal_reroll(max_rolls=40)
+            goal = DataManager.get_setting("seal_reroll") or {}
+            left = [c for c in goal.get("cards") or [] if c.get("status") not in ("reached", "missing", "refused")]
+            if not left:
+                return f"перековок: {rolls}, все выбранные карты получили нужную печать"
+            return f"перековок: {rolls}; продолжу позже" if rolls else \
+                ManualFailed("эссенции не хватает или достигнут лимит — бот продолжит, когда она появится")
+        if name == "awaken":
+            rolls = self.run_awaken_reroll(max_rolls=40)
+            goal = DataManager.get_setting("awaken_reroll") or {}
+            left = [c["name"] for c in goal.get("cards") or [] if c.get("status") not in ("reached", "missing", "refused")]
+            if not left:
+                return f"бросков: {rolls}, все выбранные карты готовы"
+            return f"бросков: {rolls}; продолжу, когда бои накопят энергию" if rolls else                 ManualFailed("энергии пробуждения нет — бот продолжит, когда бои её накопят")
         if name == "mining":
             out = {"energy": 0}
             self._mining_step(msk_today, out)
@@ -3779,6 +3961,8 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
 
         # Warm / refresh DDoS-Guard cookies up front (proxy required on VPS)
         self.ensure_site_access()
+        self.refresh_profile()
+        self.refresh_halloween_info()
 
         # Fill the stats panel now instead of after the first full cycle
         try:

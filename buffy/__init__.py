@@ -1,5 +1,5 @@
 """2R2R — настольное приложение для автоматизации MangaBuff."""
 
-__version__ = "11.0.13"
+__version__ = "11.1.0"
 APP_NAME = "2R2R"
 REPO_URL = "https://github.com/gera-star/MangaBuff-Bot"
