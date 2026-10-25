@@ -9,7 +9,7 @@
 ![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?logo=windows)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 
-**[⬇️ Download](https://github.com/gera-star/MangaBuff-Bot/releases/latest)** · [Features](#-what-buffy-does) · [Sign-in](#-signing-in) · [Telegram](#-telegram) · [Help](#-when-something-goes-wrong) · [Servers](#%EF%B8%8F-servers-and-developers)
+**[⬇️ Download](https://github.com/gera-star/MangaBuff-Bot/releases/latest)** · [Features](#-what-2r2r-does) · [Sign-in](#-signing-in) · [Telegram](#-telegram) · [Help](#-when-something-goes-wrong) · [Servers](#%EF%B8%8F-servers-and-developers)
 
 </div>
 
@@ -115,7 +115,7 @@ Sign-in, settings and logs stay on your computer in `%APPDATA%\2R2R`. 2R2R talks
 
 ## 🆘 When something goes wrong
 
-Press **Report a problem** (Сообщить о проблеме) in the journal or settings. 2R2R saves a detailed `Buffy-diagnostic.txt` with passwords, emails and tokens masked, opens its folder and a GitHub issue page. Drag the file into the issue and send it.
+Press **Report a problem** (Сообщить о проблеме) in the journal or settings. 2R2R saves a detailed `2R2R-diagnostic.txt` with passwords, emails and tokens masked, opens its folder and a GitHub issue page. Drag the file into the issue and send it.
 
 ---
 
