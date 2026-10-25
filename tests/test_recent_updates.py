@@ -499,7 +499,7 @@ class FriendlyJournalTests(unittest.TestCase):
             humanize('⚔️ Battles: 5 | W: 4 | L: 1 | +20 essence', ctx),
             '⚔️ Бои на арене: 5, побед 4, поражений 1, +20 эссенции',
         )
-        self.assertEqual(humanize('⚠️ что-то непонятное', ctx), '⚠️ Чтение глав: небольшая заминка, 2R2R повторит сам')
+        self.assertEqual(humanize('⚠️ что-то непонятное', ctx), '⚠️ Чтение глав: небольшая заминка, 2R2R попробует ещё раз')
 
     def test_problem_report_masks_secrets_and_fits_url(self):
         from urllib.parse import unquote
