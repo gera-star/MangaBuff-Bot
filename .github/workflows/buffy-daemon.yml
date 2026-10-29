@@ -2,7 +2,7 @@ name: Buffy Server Daemon
 
 on:
   schedule:
-    # Start roughly every hour, off the top of the hour; the bot runs for 55 minutes.
+    # Check hourly. A running job uses the bot's own next-wake timer and can last almost 6 hours.
     - cron: "7 * * * *"
   workflow_dispatch:
 
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   daemon:
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    timeout-minutes: 360
     env:
       BUFFY_HOME: ${{ github.workspace }}/.buffy-home
       MANGA_LOGIN: ${{ secrets.MANGA_LOGIN }}
@@ -25,7 +25,7 @@ jobs:
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
       BUFFY_STATE_KEY: ${{ secrets.BUFFY_STATE_KEY }}
-      BOT_RUN_DURATION: ${{ github.event_name == 'workflow_dispatch' && '5m' || '55m' }}
+      BOT_RUN_DURATION: ${{ github.event_name == 'workflow_dispatch' && '5m' || '350m' }}
 
     steps:
       - name: Check out Buffy source
