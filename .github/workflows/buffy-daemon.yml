@@ -118,7 +118,7 @@ jobs:
               for value in {raw_proxy, proxy}:
                   if value:
                       detail = detail.replace(value, "[proxy]")
-              detail = re.sub(r"(?i)(https?://|socks5h?://)[^/@\\s]+:[^/@\\s]+@", r"\\1***@", detail)
+              detail = re.sub(r"(?i)(https?://|socks5h?://)[^/@\s]+:[^/@\s]+@", r"\1***@", detail)
               print(f"::error::MangaBuff preflight request failed ({type(exc).__name__}): {detail}")
               sys.exit(1)
           finally:
