@@ -51,13 +51,36 @@ jobs:
         run: |
           python - <<'PY'
           import os
+          import re
+          import socket
           import sys
+          from urllib.parse import urlsplit
           from bs4 import BeautifulSoup
           from http_session import create_raw_session, is_anti_bot_page, try_refresh_ddos_guard
           from utils import normalize_proxy_url
 
           raw_proxy = os.getenv("MANGABUFF_PROXY", "")
           proxy = normalize_proxy_url(raw_proxy)
+          if not proxy:
+              print("::error::MANGABUFF_PROXY is empty. Add a working HTTP proxy URL, for example http://host:port.")
+              sys.exit(1)
+
+          parts = urlsplit(proxy)
+          if not parts.hostname:
+              print("::error::MANGABUFF_PROXY is not a valid proxy URL. Check the scheme and host.")
+              sys.exit(1)
+          proxy_host = parts.hostname
+          proxy_port = parts.port or (443 if parts.scheme == "https" else 80)
+          print(f"Proxy endpoint configured: {parts.scheme}://{proxy_host}:{proxy_port}")
+
+          # Distinguish a closed/unreachable proxy port from a MangaBuff block.
+          try:
+              with socket.create_connection((proxy_host, proxy_port), timeout=8):
+                  print("Proxy TCP connectivity: OK")
+          except OSError as exc:
+              print(f"::error::Cannot reach proxy endpoint {proxy_host}:{proxy_port} from GitHub Actions ({type(exc).__name__}: {exc}). Verify the IP, port, and that the provider allows connections from external servers.")
+              sys.exit(1)
+
           session = create_raw_session(proxy=proxy, impersonate="chrome131")
 
           try:
@@ -90,7 +113,13 @@ jobs:
               print("MangaBuff login page is reachable and includes the expected CSRF token.")
               print("Proxy configured:", "yes" if proxy else "no")
           except Exception as exc:
-              print(f"::error::MangaBuff preflight request failed ({type(exc).__name__}). Check network access and MANGABUFF_PROXY without exposing proxy credentials.")
+              detail = str(exc) or "no additional details"
+              # Redact the normalized and supplied proxy strings before writing diagnostics to public logs.
+              for value in {raw_proxy, proxy}:
+                  if value:
+                      detail = detail.replace(value, "[proxy]")
+              detail = re.sub(r"(?i)(https?://|socks5h?://)[^/@\s]+:[^/@\s]+@", r"\1***@", detail)
+              print(f"::error::MangaBuff preflight request failed ({type(exc).__name__}): {detail}")
               sys.exit(1)
           finally:
               try:
