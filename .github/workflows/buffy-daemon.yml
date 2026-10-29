@@ -46,6 +46,59 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Check MangaBuff access before starting the bot
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from bs4 import BeautifulSoup
+          from http_session import create_raw_session, is_anti_bot_page, try_refresh_ddos_guard
+          from utils import normalize_proxy_url
+
+          raw_proxy = os.getenv("MANGABUFF_PROXY", "")
+          proxy = normalize_proxy_url(raw_proxy)
+          session = create_raw_session(proxy=proxy, impersonate="chrome131")
+
+          try:
+              response = session.get("https://mangabuff.ru/login", timeout=20)
+              reason = is_anti_bot_page(response)
+              if reason == "ddos_guard_geo":
+                  if proxy:
+                      print("::error::MangaBuff blocks the configured proxy by IP/region. Check that MANGABUFF_PROXY is valid and uses a network permitted by MangaBuff.")
+                  else:
+                      print("::error::MangaBuff blocks the GitHub runner IP by region. Add the repository secret MANGABUFF_PROXY for a proxy/network that is permitted by MangaBuff, or use a runner on an allowed network.")
+                  sys.exit(1)
+
+              if reason:
+                  try_refresh_ddos_guard(session)
+                  response = session.get("https://mangabuff.ru/login", timeout=20)
+                  reason = is_anti_bot_page(response)
+
+              if reason == "ddos_guard_geo":
+                  print("::error::MangaBuff still geoblocks the runner after the protection check. Use a permitted network or proxy; code changes cannot create a valid CSRF token from a blocked response.")
+                  sys.exit(1)
+              if reason:
+                  print(f"::error::MangaBuff returned an anti-bot page ({reason}). Verify the configured proxy/network and retry later.")
+                  sys.exit(1)
+
+              token = BeautifulSoup(response.text or "", "html.parser").find("meta", attrs={"name": "csrf-token"})
+              if not token or not token.get("content"):
+                  print("::error::MangaBuff response did not contain the expected CSRF token. It is not a normal login page; inspect the response/site status before starting the bot.")
+                  sys.exit(1)
+
+              print("MangaBuff login page is reachable and includes the expected CSRF token.")
+              print("Proxy configured:", "yes" if proxy else "no")
+          except Exception as exc:
+              print(f"::error::MangaBuff preflight request failed ({type(exc).__name__}). Check network access and MANGABUFF_PROXY without exposing proxy credentials.")
+              sys.exit(1)
+          finally:
+              try:
+                  session.close()
+              except Exception:
+                  pass
+          PY
+
       - name: Restore encrypted bot state
         id: restore_state
         uses: actions/cache/restore@v4
