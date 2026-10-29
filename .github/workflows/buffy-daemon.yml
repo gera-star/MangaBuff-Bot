@@ -2,8 +2,8 @@ name: Buffy Server Daemon
 
 on:
   schedule:
-    # Start every two hours; the bot runs for 55 minutes, then rests until the next slot.
-    - cron: "0 */2 * * *"
+    # Start roughly every hour, off the top of the hour; the bot runs for 55 minutes.
+    - cron: "7 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -51,7 +51,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/buffy-state-cache
-          key: buffy-encrypted-state-v1-${{ github.run_id }}
+          key: buffy-encrypted-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             buffy-encrypted-state-v1-
 
