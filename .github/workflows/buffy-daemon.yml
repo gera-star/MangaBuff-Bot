@@ -22,6 +22,8 @@ jobs:
       MANGA_LOGIN: ${{ secrets.MANGA_LOGIN }}
       MANGA_PASSWORD: ${{ secrets.MANGA_PASSWORD }}
       MANGABUFF_PROXY: ${{ secrets.MANGABUFF_PROXY }}
+      TG_TOKEN: ${{ secrets.TG_TOKEN }}
+      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
       BUFFY_STATE_KEY: ${{ secrets.BUFFY_STATE_KEY }}
       BOT_RUN_DURATION: ${{ github.event_name == 'workflow_dispatch' && '5m' || '55m' }}
 
@@ -172,6 +174,11 @@ jobs:
               data = {}
           data["email"] = os.environ["MANGA_LOGIN"]
           data["password"] = os.environ["MANGA_PASSWORD"]
+          # Use GitHub Telegram secrets as the source of truth without persisting the token.
+          if os.getenv("TG_TOKEN") and os.getenv("TG_CHAT_ID"):
+              data.pop("tg_token", None)
+              data.pop("tg_chat_id", None)
+              data.pop("tg_enabled", None)
           fd, temporary = tempfile.mkstemp(dir=os.environ["BUFFY_HOME"], prefix=".user_data-")
           try:
               with os.fdopen(fd, "w", encoding="utf-8") as target:
