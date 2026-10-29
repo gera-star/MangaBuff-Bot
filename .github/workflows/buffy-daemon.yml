@@ -73,6 +73,33 @@ jobs:
             echo "No prior state found; first run will log in using repository secrets."
           fi
 
+      - name: Apply repository login
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import tempfile
+
+          os.makedirs(os.environ["BUFFY_HOME"], exist_ok=True)
+          path = os.path.join(os.environ["BUFFY_HOME"], "user_data.json")
+          try:
+              with open(path, "r", encoding="utf-8") as source:
+                  data = json.load(source)
+          except (OSError, json.JSONDecodeError):
+              data = {}
+          data["email"] = os.environ["MANGA_LOGIN"]
+          data["password"] = os.environ["MANGA_PASSWORD"]
+          fd, temporary = tempfile.mkstemp(dir=os.environ["BUFFY_HOME"], prefix=".user_data-")
+          try:
+              with os.fdopen(fd, "w", encoding="utf-8") as target:
+                  json.dump(data, target, ensure_ascii=False, indent=2)
+              os.replace(temporary, path)
+          finally:
+              if os.path.exists(temporary):
+                  os.unlink(temporary)
+          PY
+
       - name: Run Buffy daemon
         id: run_bot
         shell: bash
