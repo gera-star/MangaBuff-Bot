@@ -1,0 +1,110 @@
+name: Buffy Server Daemon
+
+on:
+  schedule:
+    # Start every two hours; the bot runs for 55 minutes, then rests until the next slot.
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: buffy-server-daemon
+  cancel-in-progress: false
+
+jobs:
+  daemon:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    env:
+      BUFFY_HOME: ${{ runner.temp }}/buffy-home
+      MANGA_LOGIN: ${{ secrets.MANGA_LOGIN }}
+      MANGA_PASSWORD: ${{ secrets.MANGA_PASSWORD }}
+      MANGABUFF_PROXY: ${{ secrets.MANGABUFF_PROXY }}
+      BUFFY_STATE_KEY: ${{ secrets.BUFFY_STATE_KEY }}
+      BOT_RUN_DURATION: ${{ github.event_name == 'workflow_dispatch' && '5m' || '55m' }}
+
+    steps:
+      - name: Check out Buffy source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify required repository secrets
+        shell: bash
+        run: |
+          test -n "$MANGA_LOGIN" || { echo "::error::Add repository secret MANGA_LOGIN"; exit 1; }
+          test -n "$MANGA_PASSWORD" || { echo "::error::Add repository secret MANGA_PASSWORD"; exit 1; }
+          test -n "$BUFFY_STATE_KEY" || { echo "::error::Add repository secret BUFFY_STATE_KEY"; exit 1; }
+
+      - name: Install bot dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Restore encrypted bot state
+        id: restore_state
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/buffy-state-cache
+          key: buffy-encrypted-state-v1-${{ github.run_id }}
+          restore-keys: |
+            buffy-encrypted-state-v1-
+
+      - name: Decrypt saved state
+        id: load_state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$BUFFY_HOME" "$RUNNER_TEMP/buffy-state-cache"
+          if [ -f "$RUNNER_TEMP/buffy-state-cache/state.enc" ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 \
+              -in "$RUNNER_TEMP/buffy-state-cache/state.enc" \
+              -out "$RUNNER_TEMP/buffy-state.tar.gz" \
+              -pass env:BUFFY_STATE_KEY
+            tar -xzf "$RUNNER_TEMP/buffy-state.tar.gz" -C "$BUFFY_HOME"
+            rm -f "$RUNNER_TEMP/buffy-state.tar.gz"
+            echo "Restored encrypted state."
+          else
+            echo "No prior state found; first run will log in using repository secrets."
+          fi
+
+      - name: Run Buffy daemon
+        id: run_bot
+        shell: bash
+        run: |
+          set +e
+          timeout --signal=TERM --kill-after=30s "$BOT_RUN_DURATION" python -u main.py --daemon
+          status=$?
+          set -e
+          if [ "$status" -eq 124 ] || [ "$status" -eq 137 ] || [ "$status" -eq 143 ]; then
+            echo "Run window ended as planned."
+            exit 0
+          fi
+          exit "$status"
+
+      - name: Encrypt latest state
+        id: encrypt_state
+        if: always() && steps.load_state.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/buffy-state-cache"
+          tar -czf "$RUNNER_TEMP/buffy-state.tar.gz" -C "$BUFFY_HOME" .
+          openssl enc -aes-256-cbc -salt -pbkdf2 \
+            -in "$RUNNER_TEMP/buffy-state.tar.gz" \
+            -out "$RUNNER_TEMP/buffy-state-cache/state.enc" \
+            -pass env:BUFFY_STATE_KEY
+          rm -f "$RUNNER_TEMP/buffy-state.tar.gz"
+          echo "Bot state encrypted for the next run."
+
+      - name: Save encrypted state for the next run
+        if: always() && steps.encrypt_state.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/buffy-state-cache
+          key: buffy-encrypted-state-v1-${{ github.run_id }}
