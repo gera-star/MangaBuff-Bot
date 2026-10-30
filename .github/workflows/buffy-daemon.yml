@@ -2,8 +2,8 @@ name: Buffy Server Daemon
 
 on:
   schedule:
-    # Start every 2 hours; each daemon window runs for 60 minutes, then stays offline about 60 minutes.
-    - cron: "7 */2 * * *"
+    # Run hourly; leave a short gap for state encryption/cache save before the next window.
+    - cron: "7 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -25,7 +25,7 @@ jobs:
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
       BUFFY_STATE_KEY: ${{ secrets.BUFFY_STATE_KEY }}
-      BOT_RUN_DURATION: ${{ github.event_name == 'workflow_dispatch' && '5m' || '60m' }}
+      BOT_RUN_DURATION: ${{ github.event_name == 'workflow_dispatch' && '5m' || '55m' }}
 
     steps:
       - name: Check out Buffy source
