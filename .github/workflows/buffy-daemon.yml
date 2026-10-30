@@ -2,7 +2,7 @@ name: Buffy Server Daemon
 
 on:
   schedule:
-    # Start every 2 hours; each daemon window runs for 55 minutes, then stays offline about 65 minutes.
+    # Start every 2 hours; each daemon window runs for 60 minutes, then stays offline about 60 minutes.
     - cron: "7 */2 * * *"
   workflow_dispatch:
 
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   daemon:
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    timeout-minutes: 70
     env:
       BUFFY_HOME: ${{ github.workspace }}/.buffy-home
       MANGA_LOGIN: ${{ secrets.MANGA_LOGIN }}
@@ -25,7 +25,7 @@ jobs:
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
       BUFFY_STATE_KEY: ${{ secrets.BUFFY_STATE_KEY }}
-      BOT_RUN_DURATION: ${{ github.event_name == 'workflow_dispatch' && '5m' || '55m' }}
+      BOT_RUN_DURATION: ${{ github.event_name == 'workflow_dispatch' && '5m' || '60m' }}
 
     steps:
       - name: Check out Buffy source
