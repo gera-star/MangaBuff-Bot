@@ -1,0 +1,222 @@
+name: Buffy WireGuard Daemon
+
+on:
+  schedule:
+    - cron: "19 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: buffy-wireguard-daemon
+  cancel-in-progress: false
+
+jobs:
+  daemon:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      BUFFY_HOME: ${expr} github.workspace ${"}}"}/.buffy-wg-home
+      MANGA_LOGIN: ${expr} secrets.MANGA_LOGIN ${"}"}
+      MANGA_PASSWORD: ${expr} secrets.MANGA_PASSWORD ${"}"}
+      WIREGUARD_CONFIG: ${expr} secrets.WIREGUARD_CONFIG ${"}"}
+      WIREGUARD_EXPECTED_EXIT_IP: ${expr} secrets.WIREGUARD_EXPECTED_EXIT_IP ${"}"}
+      TG_TOKEN: ${expr} secrets.TG_TOKEN ${"}"}
+      TG_CHAT_ID: ${expr} secrets.TG_CHAT_ID ${"}"}
+      BUFFY_STATE_KEY: ${expr} secrets.BUFFY_STATE_KEY ${"}"}
+      BOT_RUN_DURATION: ${expr} github.event_name == 'workflow_dispatch' && '5m' || '350m' ${"}"}
+
+    steps:
+      - name: Check out Buffy source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$MANGA_LOGIN" || { echo "::error::Add repository secret MANGA_LOGIN"; exit 1; }
+          test -n "$MANGA_PASSWORD" || { echo "::error::Add repository secret MANGA_PASSWORD"; exit 1; }
+          test -n "$BUFFY_STATE_KEY" || { echo "::error::Add repository secret BUFFY_STATE_KEY"; exit 1; }
+          test -n "$WIREGUARD_CONFIG" || { echo "::error::Add repository secret WIREGUARD_CONFIG"; exit 1; }
+
+      - name: Install WireGuard
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wireguard-tools
+
+      - name: Configure and start home WireGuard tunnel
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo install -m 600 /dev/null /etc/wireguard/wg-home.conf
+          printf '%s\n' "$WIREGUARD_CONFIG" | sudo tee /etc/wireguard/wg-home.conf >/dev/null
+          unset WIREGUARD_CONFIG
+          if grep -Eq '(^|,)[[:space:]]*::/0|^[[:space:]]*Address[[:space:]]*=.*:' /etc/wireguard/wg-home.conf; then
+            echo "::error::This first prototype is IPv4-only. Remove IPv6 Address/AllowedIPs entries from the client config."
+            exit 1
+          fi
+          sudo wg-quick up wg-home
+
+      - name: Verify tunnel and home egress
+        shell: bash
+        run: |
+          set -euo pipefail
+          route="$(ip -4 route get 1.1.1.1)"
+          echo "IPv4 route: $route"
+          echo "$route" | grep -q 'dev wg-home' || {
+            echo "::error::Default IPv4 traffic is not routed through wg-home."
+            exit 1
+          }
+          exit_ip="$(curl -4fsS --max-time 20 https://api.ipify.org)"
+          echo "WireGuard exit IPv4: $exit_ip"
+          if [ -n "$WIREGUARD_EXPECTED_EXIT_IP" ] && [ "$exit_ip" != "$WIREGUARD_EXPECTED_EXIT_IP" ]; then
+            echo "::error::Exit IP does not match WIREGUARD_EXPECTED_EXIT_IP."
+            exit 1
+          fi
+          handshake="$(sudo wg show wg-home latest-handshakes | awk 'NR==1 {print $2}')"
+          if [ -z "$handshake" ] || [ "$handshake" = "0" ]; then
+            echo "::error::WireGuard interface is up, but no peer handshake was recorded."
+            exit 1
+          fi
+          echo "WireGuard handshake: OK"
+
+      - name: Install bot dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Restore encrypted bot state
+        id: restore_state
+        uses: actions/cache/restore@v4
+        with:
+          path: ${expr} runner.temp ${"}}"}/buffy-wg-state-cache
+          key: buffy-wg-encrypted-state-v1-${expr} github.run_id ${"}"}-${expr} github.run_attempt ${"}"}
+          restore-keys: |
+            buffy-wg-encrypted-state-v1-
+
+      - name: Decrypt saved state
+        id: load_state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$BUFFY_HOME" "$RUNNER_TEMP/buffy-wg-state-cache"
+          if [ -f "$RUNNER_TEMP/buffy-wg-state-cache/state.enc" ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 \
+              -in "$RUNNER_TEMP/buffy-wg-state-cache/state.enc" \
+              -out "$RUNNER_TEMP/buffy-wg-state.tar.gz" \
+              -pass env:BUFFY_STATE_KEY
+            tar -xzf "$RUNNER_TEMP/buffy-wg-state.tar.gz" -C "$BUFFY_HOME"
+            rm -f "$RUNNER_TEMP/buffy-wg-state.tar.gz"
+            echo "Restored encrypted WireGuard bot state."
+          else
+            echo "No prior WireGuard bot state found."
+          fi
+
+      - name: Apply repository login and disable proxy fallback
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import tempfile
+
+          home = os.environ["BUFFY_HOME"]
+          os.makedirs(home, exist_ok=True)
+          path = os.path.join(home, "user_data.json")
+          try:
+              with open(path, "r", encoding="utf-8") as source:
+                  data = json.load(source)
+          except (OSError, json.JSONDecodeError):
+              data = {}
+          data["email"] = os.environ["MANGA_LOGIN"]
+          data["password"] = os.environ["MANGA_PASSWORD"]
+          data.pop("proxy", None)
+          data.pop("MANGABUFF_PROXY", None)
+          if os.getenv("TG_TOKEN") and os.getenv("TG_CHAT_ID"):
+              data.pop("tg_token", None)
+              data.pop("tg_chat_id", None)
+              data.pop("tg_enabled", None)
+          fd, temporary = tempfile.mkstemp(dir=home, prefix=".user_data-")
+          try:
+              with os.fdopen(fd, "w", encoding="utf-8") as target:
+                  json.dump(data, target, ensure_ascii=False, indent=2)
+              os.replace(temporary, path)
+          finally:
+              if os.path.exists(temporary):
+                  os.unlink(temporary)
+          PY
+
+      - name: Check MangaBuff access through home network
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys
+          from bs4 import BeautifulSoup
+          from http_session import create_raw_session, is_anti_bot_page, try_refresh_ddos_guard
+
+          session = create_raw_session(proxy=None, impersonate="chrome131")
+          try:
+              response = session.get("https://mangabuff.ru/login", timeout=25)
+              reason = is_anti_bot_page(response)
+              if reason:
+                  try_refresh_ddos_guard(session)
+                  response = session.get("https://mangabuff.ru/login", timeout=25)
+                  reason = is_anti_bot_page(response)
+              if reason:
+                  print(f"::error::MangaBuff preflight returned anti-bot response: {reason}")
+                  sys.exit(1)
+              token = BeautifulSoup(response.text or "", "html.parser").find("meta", attrs={"name": "csrf-token"})
+              if not token or not token.get("content"):
+                  print("::error::MangaBuff response did not contain the expected CSRF token.")
+                  sys.exit(1)
+              print("MangaBuff login page is reachable through the WireGuard home exit.")
+          finally:
+              session.close()
+          PY
+
+      - name: Run Buffy WireGuard daemon
+        shell: bash
+        run: |
+          set +e
+          timeout --signal=TERM --kill-after=30s "$BOT_RUN_DURATION" python -u main.py --daemon
+          status=$?
+          set -e
+          if [ "$status" -eq 124 ] || [ "$status" -eq 137 ] || [ "$status" -eq 143 ]; then
+            echo "Run window ended as planned."
+            exit 0
+          fi
+          exit "$status"
+
+      - name: Encrypt latest bot state
+        id: encrypt_state
+        if: always() && steps.load_state.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/buffy-wg-state-cache"
+          tar -czf "$RUNNER_TEMP/buffy-wg-state.tar.gz" -C "$BUFFY_HOME" .
+          openssl enc -aes-256-cbc -salt -pbkdf2 \
+            -in "$RUNNER_TEMP/buffy-wg-state.tar.gz" \
+            -out "$RUNNER_TEMP/buffy-wg-state-cache/state.enc" \
+            -pass env:BUFFY_STATE_KEY
+          rm -f "$RUNNER_TEMP/buffy-wg-state.tar.gz"
+
+      - name: Save encrypted bot state
+        if: always() && steps.encrypt_state.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${expr} runner.temp ${"}}"}/buffy-wg-state-cache
+          key: buffy-wg-encrypted-state-v1-${expr} github.run_id ${"}"}-${expr} github.run_attempt ${"}"}
+
+      - name: Stop home WireGuard tunnel
+        if: always()
+        shell: bash
+        run: |
+          sudo wg-quick down wg-home || true
+          sudo rm -f /etc/wireguard/wg-home.conf
