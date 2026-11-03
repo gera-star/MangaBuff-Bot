@@ -1,0 +1,208 @@
+name: Buffy WireGuard Home Gateway (test)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_duration:
+        description: "Bot test duration"
+        required: true
+        type: choice
+        options:
+          - "5m"
+          - "30m"
+        default: "5m"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: buffy-wireguard-home-gateway
+  cancel-in-progress: false
+
+jobs:
+  daemon:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BUFFY_HOME: ${{ github.workspace }}/.buffy-home-wg
+      MANGA_LOGIN: ${{ secrets.MANGA_LOGIN }}
+      MANGA_PASSWORD: ${{ secrets.MANGA_PASSWORD }}
+      TG_TOKEN: ${{ secrets.TG_TOKEN }}
+      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+      BUFFY_STATE_KEY: ${{ secrets.BUFFY_STATE_KEY }}
+      WG_CONFIG: ${{ secrets.WG_HOME_CONFIG }}
+      BOT_RUN_DURATION: ${{ inputs.run_duration }}
+
+    steps:
+      - name: Check out Buffy source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$MANGA_LOGIN" || { echo "::error::Add repository secret MANGA_LOGIN"; exit 1; }
+          test -n "$MANGA_PASSWORD" || { echo "::error::Add repository secret MANGA_PASSWORD"; exit 1; }
+          test -n "$BUFFY_STATE_KEY" || { echo "::error::Add repository secret BUFFY_STATE_KEY"; exit 1; }
+          test -n "$WG_CONFIG" || { echo "::error::Add repository secret WG_HOME_CONFIG containing the WireGuard client configuration exported for this VPS."; exit 1; }
+
+      - name: Install system and Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y wireguard-tools iproute2 iptables curl
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Create isolated network namespace and connect WireGuard
+        id: wireguard
+        shell: bash
+        run: |
+          set -euo pipefail
+          WG_DIR="$RUNNER_TEMP/buffy-wg"
+          mkdir -p "$WG_DIR"
+          chmod 700 "$WG_DIR"
+          printf '%s\n' "$WG_CONFIG" > "$WG_DIR/wg0.conf"
+          chmod 600 "$WG_DIR/wg0.conf"
+          # DNS is configured inside the namespace separately; wg-quick's
+          # resolvconf integration is not available on every hosted runner.
+          sed -i '/^[[:space:]]*DNS[[:space:]]*=/Id' "$WG_DIR/wg0.conf"
+
+          sudo ip netns add buffy-wg
+          sudo mkdir -p /etc/netns/buffy-wg
+          sudo cp /etc/resolv.conf /etc/netns/buffy-wg/resolv.conf
+          sudo ip -n buffy-wg link set lo up
+
+          # The WireGuard interface and default route exist only in this
+          # namespace. GitHub Actions runner traffic keeps its normal route.
+          sudo ip netns exec buffy-wg wg-quick up "$WG_DIR/wg0.conf"
+
+          echo "WireGuard interface is up inside the isolated bot namespace."
+          echo "Runner's normal network namespace was not changed."
+
+      - name: Verify that the bot namespace exits through the home connection
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOME_IP="$(sudo ip netns exec buffy-wg curl -4fsS --max-time 20 https://api.ipify.org)"
+          echo "Home gateway IPv4 observed from bot namespace: $HOME_IP"
+          test -n "$HOME_IP"
+
+          # Fail closed if the namespace cannot reach the public Internet
+          # through the tunnel. Do not fall back to the VPS public route.
+          sudo ip netns exec buffy-wg curl -4fsSI --max-time 20 https://mangabuff.ru/login >/dev/null
+          echo "MangaBuff endpoint is reachable through the WireGuard namespace."
+
+      - name: Restore encrypted WireGuard-bot state
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/buffy-wg-state-cache
+          key: buffy-wg-encrypted-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            buffy-wg-encrypted-state-v1-
+
+      - name: Decrypt saved state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$BUFFY_HOME" "$RUNNER_TEMP/buffy-wg-state-cache"
+          if [ -f "$RUNNER_TEMP/buffy-wg-state-cache/state.enc" ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 \
+              -in "$RUNNER_TEMP/buffy-wg-state-cache/state.enc" \
+              -out "$RUNNER_TEMP/buffy-wg-state.tar.gz" \
+              -pass env:BUFFY_STATE_KEY
+            tar -xzf "$RUNNER_TEMP/buffy-wg-state.tar.gz" -C "$BUFFY_HOME"
+            rm -f "$RUNNER_TEMP/buffy-wg-state.tar.gz"
+            echo "Restored encrypted WireGuard-bot state."
+          else
+            echo "No prior WireGuard-bot state found."
+          fi
+
+      - name: Apply repository login
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import tempfile
+
+          home = os.environ["BUFFY_HOME"]
+          os.makedirs(home, exist_ok=True)
+          path = os.path.join(home, "user_data.json")
+          try:
+              with open(path, "r", encoding="utf-8") as source:
+                  data = json.load(source)
+          except (OSError, json.JSONDecodeError):
+              data = {}
+          data["email"] = os.environ["MANGA_LOGIN"]
+          data["password"] = os.environ["MANGA_PASSWORD"]
+          if os.getenv("TG_TOKEN") and os.getenv("TG_CHAT_ID"):
+              data.pop("tg_token", None)
+              data.pop("tg_chat_id", None)
+              data.pop("tg_enabled", None)
+          fd, temporary = tempfile.mkstemp(dir=home, prefix=".user_data-")
+          try:
+              with os.fdopen(fd, "w", encoding="utf-8") as target:
+                  json.dump(data, target, ensure_ascii=False, indent=2)
+              os.replace(temporary, path)
+          finally:
+              if os.path.exists(temporary):
+                  os.unlink(temporary)
+          PY
+
+      - name: Run Buffy daemon through the home WireGuard gateway
+        shell: bash
+        run: |
+          set +e
+          sudo ip netns exec buffy-wg env \
+            BUFFY_HOME="$BUFFY_HOME" \
+            MANGA_LOGIN="$MANGA_LOGIN" \
+            MANGA_PASSWORD="$MANGA_PASSWORD" \
+            TG_TOKEN="$TG_TOKEN" \
+            TG_CHAT_ID="$TG_CHAT_ID" \
+            BUFFY_STATE_KEY="$BUFFY_STATE_KEY" \
+            timeout --signal=TERM --kill-after=30s "$BOT_RUN_DURATION" \
+            python -u main.py --daemon
+          status=$?
+          set -e
+          if [ "$status" -eq 124 ] || [ "$status" -eq 137 ] || [ "$status" -eq 143 ]; then
+            echo "Requested test window ended."
+            exit 0
+          fi
+          exit "$status"
+
+      - name: Encrypt latest WireGuard-bot state
+        if: always() && env.BUFFY_STATE_KEY != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/buffy-wg-state-cache"
+          if [ -d "$BUFFY_HOME" ]; then
+            tar -czf "$RUNNER_TEMP/buffy-wg-state.tar.gz" -C "$BUFFY_HOME" .
+            openssl enc -aes-256-cbc -salt -pbkdf2 \
+              -in "$RUNNER_TEMP/buffy-wg-state.tar.gz" \
+              -out "$RUNNER_TEMP/buffy-wg-state-cache/state.enc" \
+              -pass env:BUFFY_STATE_KEY
+            rm -f "$RUNNER_TEMP/buffy-wg-state.tar.gz"
+          fi
+
+      - name: Save encrypted WireGuard-bot state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/buffy-wg-state-cache
+          key: buffy-wg-encrypted-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Remove WireGuard namespace and temporary keys
+        if: always()
+        shell: bash
+        run: |
+          sudo ip netns exec buffy-wg wg-quick down "$RUNNER_TEMP/buffy-wg/wg0.conf" 2>/dev/null || true
+          sudo ip netns delete buffy-wg 2>/dev/null || true
+          sudo rm -rf /etc/netns/buffy-wg "$RUNNER_TEMP/buffy-wg"
