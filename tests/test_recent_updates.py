@@ -83,6 +83,21 @@ class UpdateTests(unittest.TestCase):
         self.bot.notifier.notify_rank_tier_promotion.assert_not_called()
         self.assertEqual(self.settings['arena_rank_tracker']['current_tier'], 'Золото')
 
+    def test_bouncing_between_two_tiers_announces_the_new_tier_once(self):
+        gold, plat, diamond = rank('Золото', 2, 'Золото 1'), rank(), rank('Алмаз', 4, 'Алмаз 4')
+        self.bot.get_current_arena_rank_info = Mock(side_effect=[gold, plat, gold, plat, gold, plat, diamond])
+        for _ in range(7):
+            self.bot.check_arena_rank_promotion(1, 1, 0)
+        calls = [c.kwargs['new_tier'] for c in self.bot.notifier.notify_rank_tier_promotion.call_args_list]
+        self.assertEqual(len(calls), 2)                  # Платина once, then Алмаз
+        self.assertIn('Алмаз', calls[1])
+
+    def test_season_reset_announces_climbing_again(self):
+        self.bot.get_current_arena_rank_info = Mock(side_effect=[rank(), rank('Бронза', 0, 'Бронза 1'), rank('Серебро', 1, 'Серебро 1')])
+        for _ in range(3):
+            self.bot.check_arena_rank_promotion()
+        self.bot.notifier.notify_rank_tier_promotion.assert_called_once()
+
     @patch('engine.time.sleep')
     def test_third_zero_reward_battle_is_counted(self, sleep):
         self.settings['arena_rank_mode'] = False
@@ -116,6 +131,20 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(self.bot.clean_unwanted_notifications(active_trade_ids=['10', '11']), 6)
         read_ids = {call.args[0].split('/')[-2] for call in self.bot.session.post.call_args_list}
         self.assertEqual(read_ids, {'card', 'scroll', 'animated', 'club', 'tower', 'delivered'})
+
+    @patch('engine.time.sleep')
+    def test_cancelled_trade_is_read_even_without_a_telegram_alert(self, sleep):
+        html = ''.join(
+            f'<div class="notifications__item notifications__item--not-read" data-id="{key}">'
+            f'<a href="/users/1">yazavame</a> {text} предложение на обмен <a href="/trades/94065893">просмотреть</a></div>'
+            for key, text in [('cancel', 'отменил'), ('offer', 'отправил')])
+        html += ('<div class="notifications__item notifications__item--not-read" data-id="open">'
+                 'отправил предложение на обмен <a href="/trades/5">просмотреть</a></div>')
+        self.bot.session.get.return_value = response(html)
+        self.bot.session.post.return_value = response()
+        self.bot.clean_unwanted_notifications(active_trade_ids=[])
+        read_ids = {call.args[0].split('/')[-2] for call in self.bot.session.post.call_args_list}
+        self.assertEqual(read_ids, {'cancel', 'offer'})          # the open offer stays unread
 
     def trade_setup(self, delivered):
         self.bot.session.get.side_effect = [
@@ -461,6 +490,27 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(info['url'], 'exe')
         self.assertEqual(info['size'], 7)
 
+    def test_latest_404_falls_back_to_the_newest_tag(self):
+        # GitHub outage: no release list for logged-out users, yet each release opens by its tag
+        from buffy import updater
+
+        release = {'tag_name': 'v11.1.0', 'html_url': 'page',
+                   'assets': [{'name': 'Buffy-Setup-11.1.0.exe', 'browser_download_url': 'exe', 'size': 7}]}
+        tags = [{'name': 'v11.0.9'}, {'name': 'v11.1.0'}, {'name': 'v11.0.12'}, {'name': 'nightly'}]
+        asked = []
+
+        def get(url, **kw):
+            asked.append(url.rsplit('/', 1)[-1])
+            if url.endswith('/releases/latest'):
+                return Mock(status_code=404)
+            if '/tags?' in url:
+                return Mock(status_code=200, json=Mock(return_value=tags))
+            return Mock(status_code=200, json=Mock(return_value=release))
+        with patch.object(updater.requests, 'get', side_effect=get):
+            info = updater.fetch_latest()
+        self.assertEqual(asked[-1], 'v11.1.0')  # the highest version, not the first tag listed
+        self.assertEqual(info['url'], 'exe')
+
 
 class FriendlyJournalTests(unittest.TestCase):
     def test_technical_lines_become_plain_or_hidden(self):
@@ -682,6 +732,16 @@ class ClubScheduleTests(unittest.TestCase):
         self.bot.run_club_cycle()
         self.bot.run_club_cycle()
         self.assertEqual(self.bot.get_club_slug.call_count, 1)
+        self.assertEqual(self.bot.club_check_interval(), 6 * 3600)
+
+    def test_walled_off_boost_page_waits_until_tomorrow_with_one_alert(self):
+        self.bot.notifier = Mock()
+        self.bot.get_club_slug = Mock(return_value='my-club')
+        self.bot.session.get.return_value = Mock(status_code=403, text='DDoS-Guard')
+        self.bot.run_club_cycle()
+        self.bot.run_club_cycle()
+        self.assertEqual(self.bot.session.get.call_count, 1)
+        self.bot.notifier.notify_alert.assert_called_once()
         self.assertEqual(self.bot.club_check_interval(), 6 * 3600)
 
     def test_full_crystals_switch_to_rare_checks(self):

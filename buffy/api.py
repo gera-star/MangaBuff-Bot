@@ -26,12 +26,15 @@ import requests
 from buffy import APP_NAME, REPO_URL, __version__
 from buffy.humanize import MODULES as MODULE_TITLES, humanize
 from data_management import DataManager
+from diagnostics import mask_secrets
+from buffy.diagnostics import save_report
 from utils import normalize_proxy_url
 
 MSK = timezone(timedelta(hours=3))
 
 # Settings the UI may read and change: key -> default
 SETTINGS = {
+    "profile_theme": True,  # colour the app like the MangaBuff profile skin
     # daemon modules
     "battles_enabled": True,
     "arena_cup_enabled": True,
@@ -93,6 +96,8 @@ class BuffyApi:
         self._started_at = None
         self._want_running = False
         self._window = None
+        self._social_lock = threading.Lock()  # one MangaBuff sign-in window at a time
+        self._notify = None  # set by the app: Windows notification from the tray icon
         self._on_status_change = None  # set by the app (tray menu refresh)
         self._updater = None  # set by the app
         self._quit = None  # set by the app: full exit
@@ -102,7 +107,7 @@ class BuffyApi:
 
     # ------------------------------------------------------------------ logs
     def _log(self, message):
-        raw = str(message)
+        raw = mask_secrets(str(message))
         ts = time.strftime("%H:%M:%S")
         _file_log().info(raw)
         with self._log_lock:
@@ -132,15 +137,43 @@ class BuffyApi:
         return True
 
     def report_problem(self, description):
-        """Open a prefilled GitHub issue: the user's words plus the technical log, secrets masked."""
+        """Save full diagnostics, then open the issue editor with a short preview (even if saving failed)."""
+        result = self.export_logs(description)
         with self._log_lock:
             raw = list(self._raw)
+        url = build_issue_url(description, raw, self._report_secrets(), status=self._status,
+                              report_name=os.path.basename(result['path']) if result['ok'] else '')
+        webbrowser.open(url)
+        if not result['ok']:
+            return {'ok': True, 'warning': 'Отчёт не сохранился, в сообщение попал только сокращённый журнал.'}
+        return result
+
+    def _report_secrets(self):
         email, password = DataManager.get_credentials()
         settings = DataManager.load_json(_data_file())
-        secrets = [email, password, settings.get("tg_token"), settings.get("tg_chat_id"), settings.get("proxy")]
-        url = build_issue_url(description, raw, secrets, status=self._status)
-        webbrowser.open(url)
-        return {"ok": True}
+        return [email, password, settings.get('tg_token'), settings.get('tg_chat_id'), settings.get('proxy')]
+
+    def _save_report(self, description):
+        with self._log_lock:
+            raw = list(self._raw)
+        return save_report(os.path.dirname(os.path.abspath(_data_file())), description, raw,
+                           self._report_secrets(), self._status, _file_log())
+
+    def _reveal_report(self, path):
+        if sys.platform == 'win32':
+            subprocess.Popen(['explorer.exe', '/select,', os.path.normpath(path)])
+
+    def export_logs(self, description=''):
+        try:
+            path = self._save_report(description)
+        except OSError:
+            return {'ok': False, 'error': 'Не удалось сохранить отчёт. Проверь свободное место и доступ к папке Buffy.'}
+        result = {'ok': True, 'path': path}
+        try:
+            self._reveal_report(path)
+        except OSError:
+            result['warning'] = 'Не удалось открыть папку. Отчёт сохранён: ' + path
+        return result
 
     # -------------------------------------------------------------- settings
     def get_settings(self):
@@ -167,15 +200,17 @@ class BuffyApi:
         return True
 
     def get_bootstrap(self):
-        email, password = DataManager.get_credentials()
+        email = DataManager.get_credentials()[0]
         settings = self.get_settings()
         return {
             "app": APP_NAME,
             "version": __version__,
             "repo": REPO_URL,
             "email": email or "",
-            "has_credentials": bool(email and password),
-            "onboarded": bool(settings.get("app_onboarded")) and bool(email and password),
+            "has_credentials": DataManager.has_login(),
+            "login_method": DataManager.get_setting("login_method"),
+            "profile": DataManager.get_setting("account_profile"),
+            "onboarded": bool(settings.get("app_onboarded")) and DataManager.has_login(),
             "settings": settings,
             "data_dir": os.path.dirname(_data_file()),
         }
@@ -209,6 +244,7 @@ class BuffyApi:
             if ok:
                 DataManager.switch_account(email)
                 DataManager.set_credentials(email, password)
+                threading.Thread(target=bot.refresh_profile, daemon=True).start()
                 self._log(f"✅ Вход выполнен: {email}")
                 return {"ok": True}
             if getattr(bot, "login_rejected", False):
@@ -216,6 +252,313 @@ class BuffyApi:
             return {"ok": False, "error": "Не удалось связаться с MangaBuff. Проверь интернет или прокси на странице «Сеть»."}
         except Exception as e:
             return {"ok": False, "error": f"Ошибка соединения: {e}"}
+
+    def social_login(self, provider):
+        """Sign in through MangaBuff's own page (VK, Discord, Yandex, Google) and keep that window's cookies."""
+        name = SOCIAL_PROVIDERS.get(provider)
+        if not name:
+            return {"ok": False, "error": "Неизвестный способ входа"}
+        if self._status in ("running", "starting", "restarting", "stopping") or self._manual_bot is not None:
+            return {"ok": False, "error": "Сначала останови бота и дождись конца ручного запуска"}
+        signed_in = self._social_window(provider, hidden_sec=0)
+        if not signed_in:
+            return {"ok": False, "error": "Вход отменён: окно закрыто до входа на сайт"}
+        try:
+            from engine import MangaMinerBot
+
+            bot = MangaMinerBot(log_callback=lambda *_: None, progress_callback=lambda *_: None,
+                                stats_callback=lambda **_: None)
+            bot.session.cookies.clear()
+            bot.use_cookies(*signed_in)
+            alive = bot.adopt_cookie_session()
+        except Exception as e:
+            return {"ok": False, "error": f"Ошибка соединения: {e}"}
+        if alive is None:
+            return {"ok": False, "error": "Не удалось связаться с MangaBuff. Проверь интернет и попробуй ещё раз."}
+        if not alive:
+            return {"ok": False, "error": "Сайт не подтвердил вход. Попробуй ещё раз или войди по почте и паролю."}
+        label = f"{name} · id{bot.user_id}" if bot.user_id else name
+        DataManager.switch_account(label)
+        DataManager.set_credentials(label, None, login_method="social")
+        DataManager.set_setting("login_provider", provider)
+        threading.Thread(target=bot.refresh_profile, daemon=True).start()
+        self._log(f"✅ Вход выполнен: {label}")
+        return {"ok": True}
+
+    def _social_window(self, provider, hidden_sec, timeout_sec=None):
+        """Open MangaBuff's sign-in through `provider` and wait until the site lets us in.
+        The window starts hidden for `hidden_sec`: VK/Google/Yandex remember the user, so a
+        repeat sign-in usually finishes by itself; only then is the window shown.
+        Returns (cookies, user_agent) or None if closed or timed out."""
+        import webview
+
+        with self._social_lock:
+            win = webview.create_window(f"Вход в MangaBuff через {SOCIAL_PROVIDERS[provider]}",
+                                        f"https://mangabuff.ru/login/redirect/{provider}",
+                                        width=560, height=760, hidden=hidden_sec > 0)
+            closed = threading.Event()
+            win.events.closed += closed.set
+            try:
+                started = time.time()
+                shown = hidden_sec <= 0
+                while not closed.is_set() and time.time() - started < (timeout_sec or SOCIAL_LOGIN_TIMEOUT_SEC):
+                    try:
+                        url = urlsplit(win.get_current_url() or "")
+                        # The site sends a signed-in user from /login/callback/... to an ordinary page
+                        if url.hostname == "mangabuff.ru" and not url.path.startswith("/login"):
+                            cookies = {m.key: m.value for jar in win.get_cookies() for m in jar.values()}
+                            return cookies, win.evaluate_js("navigator.userAgent")
+                    except Exception:
+                        pass  # pywebview gives up after 20 s of a still-loading page; MangaBuff often takes longer
+                    if not shown and time.time() - started >= hidden_sec:
+                        self._log(f"🔑 MangaBuff просит снова войти через {SOCIAL_PROVIDERS[provider]} — открыл окно входа")
+                        win.show()
+                        shown = True
+                    closed.wait(1)
+                return None
+            finally:
+                if not closed.is_set():
+                    win.destroy()
+
+    def _silent_social_relogin(self):
+        """Called by the bot when the saved social session died."""
+        provider = DataManager.get_setting("login_provider")
+        if provider not in SOCIAL_PROVIDERS:
+            return None
+        # The daemon waits here without a heartbeat: stay well under its 8-minute watchdog
+        return self._social_window(provider, hidden_sec=SOCIAL_SILENT_SEC, timeout_sec=5 * 60)
+
+    # ------------------------------------------------------- awakening reroll
+    def reroll_state(self):
+        """Current reroll goal and, for the Arena page, how likely its minimums are."""
+        goal = DataManager.get_setting("awaken_reroll") or None
+        return {"goal": goal, "odds": self.reroll_odds(goal or {})["odds"] if goal else None}
+
+    def reroll_odds(self, goal):
+        from arena import MANAGEMENT_FILE, reroll_odds
+
+        try:
+            goal = {k: float((goal or {}).get(k) or 0) for k in ("min_attack", "min_health", "min_crit")}
+        except (TypeError, ValueError):
+            return {"odds": None}
+        cards = DataManager.load_json(MANAGEMENT_FILE).get("inventory") or []
+        return {"odds": reroll_odds(cards, goal), "sample": sum(1 for c in cards if c.get("battle_attack"))}
+
+    def reroll_search(self, query):
+        """Cards from the collection by name, awakened ones with their stats."""
+        query = (query or "").strip()
+        if len(query) < 2:
+            return {"ok": False, "error": "Введи хотя бы две буквы названия карты"}
+        try:
+            from engine import MangaMinerBot
+            from urllib.parse import urljoin
+
+            bot = MangaMinerBot(log_callback=lambda *_: None, progress_callback=lambda *_: None,
+                                stats_callback=lambda **_: None)
+            if not bot.validate_session():
+                return {"ok": False, "error": "Сначала запусти бота, чтобы он вошёл в аккаунт"}
+            _, root = bot.management_page("/battle/unawaken", ".battle-unawaken")
+            route = urljoin("https://mangabuff.ru", root.select_one(".card-filter-form[data-url]")["data-url"])
+            found = []
+            for awake in (1, -1):
+                rows = bot.management_post(route, {"search": query, "is_battle": awake, "per_page": 70, "page": 1})
+                found += [_reroll_card_view(c, awake == 1) for c in rows.get("data") or []
+                          if not int(c.get("in_trade") or 0)]
+            # The site also matches the manga title: cards named like the query come first
+            q = query.lower()
+            found.sort(key=lambda c: q not in (c["name"] or "").lower())
+            return {"ok": True, "cards": found}
+        except Exception as e:
+            return {"ok": False, "error": f"Не удалось получить коллекцию: {e}"}
+
+    def reroll_start(self, cards, goal):
+        """Save the cards and minimums, then start right away (queued for the bot's next pause if it is running)."""
+        try:
+            mins = {k: max(0, int(float((goal or {}).get(k) or 0))) for k in ("min_attack", "min_health", "min_crit")}
+            picked = [{"card_user_id": int(c["id"]), "name": str(c.get("name") or ""), "rank": c.get("rank"),
+                       "copy": c.get("copy"), "image": c.get("image"), "manga": c.get("manga"), "status": "waiting",
+                       "attempts": 0, "history": []} for c in cards or []]
+        except (TypeError, ValueError, KeyError):
+            return {"ok": False, "error": "Выбери карты и укажи числа"}
+        if not picked:
+            return {"ok": False, "error": "Выбери хотя бы одну карту"}
+        if not any(mins.values()):
+            return {"ok": False, "error": "Укажи хотя бы один минимум"}
+        DataManager.set_setting("awaken_reroll", {**mins, "active": True, "cards": picked})
+        names = ", ".join(f"«{c['name']}»" for c in picked)
+        self._log(f"🎲 Перебор пробуждения: {names} до ATK {mins['min_attack']}, HP {mins['min_health']}, "
+                  f"крит {mins['min_crit']}%.")
+        started = self.run_module("awaken")
+        return {"ok": True, "queued": started.get("queued"), "warning": None if started.get("ok") else started.get("error")}
+
+    def seal_info(self):
+        from arena import SEAL_INFO, SEAL_META, SEALS
+
+        out = {}
+        for sid, (n, s, r) in SEAL_INFO.items():
+            pop, effect, verdict = SEAL_META.get(SEALS.get(sid), (None, None, ""))
+            out[sid] = {"name": n, "short": s, "rarity": r, "popularity": pop, "effect": effect, "verdict": verdict}
+        return out
+
+    def seal_odds(self, seals):
+        """Chance of one of these seals per reforge, from how often they sit on the person's awakened cards."""
+        from arena import MANAGEMENT_FILE
+
+        cards = [c for c in DataManager.load_json(MANAGEMENT_FILE).get("inventory") or [] if c.get("battle_seal_id")]
+        wanted = {int(s) for s in seals or []}
+        return {"odds": sum(int(c["battle_seal_id"]) in wanted for c in cards) / len(cards) if cards else None}
+
+    def seal_state(self):
+        return {"goal": DataManager.get_setting("seal_reroll"), "essence": DataManager.get_setting("reroll_essence")}
+
+    def seal_essence(self):
+        """Essence balance, read from the site when the Awakening page opens (cached for a minute)."""
+        cached = DataManager.get_setting("reroll_essence") or {}
+        if time.time() - float(cached.get("at") or 0) < 60:
+            return {"ok": True, **cached}
+        try:
+            from arena import _digits, note_essence
+            from engine import MangaMinerBot
+
+            bot = MangaMinerBot(log_callback=lambda *_: None, progress_callback=lambda *_: None,
+                                stats_callback=lambda **_: None)
+            if not bot.validate_session():
+                return {"ok": False, **cached}
+            _, root = bot.management_page("/battle/reroll", ".battle-reroll")
+            note_essence(_digits(root.select_one("[data-reroll-essence]").get_text()))
+            return {"ok": True, **(DataManager.get_setting("reroll_essence") or {})}
+        except Exception:
+            return {"ok": False, **cached}
+
+    def seal_start(self, cards, seals, max_essence):
+        try:
+            wanted = sorted({int(s) for s in seals or []})
+            limit = max(0, int(float(max_essence or 0)))
+            picked = [{"card_user_id": int(c["id"]), "name": str(c.get("name") or ""), "rank": c.get("rank"),
+                       "copy": c.get("copy"), "image": c.get("image"), "manga": c.get("manga"),
+                       "seal": c.get("seal"), "status": "waiting", "attempts": 0, "history": []}
+                      for c in cards or [] if c.get("awake") is not False]
+        except (TypeError, ValueError, KeyError):
+            return {"ok": False, "error": "Выбери карты и печати"}
+        if not picked:
+            return {"ok": False, "error": "Выбери хотя бы одну пробуждённую карту"}
+        if not wanted:
+            return {"ok": False, "error": "Выбери хотя бы одну нужную печать"}
+        DataManager.set_setting("seal_reroll", {"active": True, "seals": wanted, "max_essence": limit, "spent": 0,
+                                                "cards": picked})
+        self._log(f"🔮 Перековка печати: {', '.join(c['name'] for c in picked)}"
+                  + (f", не больше {limit} эссенции" if limit else ""))
+        started = self.run_module("seals")
+        return {"ok": True, "queued": started.get("queued"), "warning": None if started.get("ok") else started.get("error")}
+
+    def seal_resume(self, max_essence=None):
+        goal = DataManager.get_setting("seal_reroll")
+        if not goal or not goal.get("cards"):
+            return {"ok": False, "error": "Нечего продолжать"}
+        if max_essence is not None:
+            goal = {**goal, "max_essence": max(0, int(float(max_essence or 0)))}
+        DataManager.set_setting("seal_reroll", {**goal, "active": True})
+        started = self.run_module("seals")
+        return {"ok": True, "queued": started.get("queued"), "warning": None if started.get("ok") else started.get("error")}
+
+    def seal_stop(self):
+        goal = DataManager.get_setting("seal_reroll")
+        if goal:
+            DataManager.set_setting("seal_reroll", {**goal, "active": False})
+        return {"ok": True}
+
+    def reroll_owned(self):
+        """Awakened cards from the bot's own cache: instant, no site request. Strongest first."""
+        from arena import MANAGEMENT_FILE, arena_score
+
+        cards = [c for c in DataManager.load_json(MANAGEMENT_FILE).get("inventory") or []
+                 if c.get("battle_attack") and not int(c.get("in_trade") or 0)]
+        cards.sort(key=arena_score, reverse=True)
+        return {"cards": [_reroll_card_view(c, True) for c in cards]}
+
+    def _reroll_reached(self, name, stats):
+        self._log(f"🎉 Перебор пробуждения: «{name}» готова — {stats}")
+        if self._notify:
+            try:
+                self._notify(f"«{name}» готова: {stats}", "Перебор пробуждения")
+            except Exception:
+                pass
+
+    def reroll_goal(self):
+        """Light read for the Awakening page while a series runs (polled twice a second)."""
+        return {"goal": DataManager.get_setting("awaken_reroll"), "energy": DataManager.get_setting("awaken_energy")}
+
+    def reroll_energy(self):
+        """Awakenings left, read from the site when the Awakening page opens (cached for a minute)."""
+        cached = DataManager.get_setting("awaken_energy") or {}
+        if time.time() - float(cached.get("at") or 0) < 60:
+            return {"ok": True, **cached}
+        try:
+            from engine import MangaMinerBot
+
+            bot = MangaMinerBot(log_callback=lambda *_: None, progress_callback=lambda *_: None,
+                                stats_callback=lambda **_: None)
+            if not bot.validate_session():
+                return {"ok": False, **cached}
+            bot._reroll_energy()  # stores the fresh number
+            return {"ok": True, **(DataManager.get_setting("awaken_energy") or {})}
+        except Exception:
+            return {"ok": False, **cached}
+
+    def reroll_resume(self):
+        """Go on with the same cards and minimums after «Остановить»."""
+        goal = DataManager.get_setting("awaken_reroll")
+        if not goal or not goal.get("cards"):
+            return {"ok": False, "error": "Нечего продолжать — начни новый перебор"}
+        DataManager.set_setting("awaken_reroll", {**goal, "active": True})
+        started = self.run_module("awaken")
+        return {"ok": True, "queued": started.get("queued"), "warning": None if started.get("ok") else started.get("error")}
+
+    def reroll_set_mins(self, goal):
+        """New minimums for the cards already chosen; a card that now passes is kept on the next check."""
+        current = DataManager.get_setting("awaken_reroll")
+        if not current:
+            return {"ok": False, "error": "Перебор не найден"}
+        try:
+            mins = {k: max(0, int(float((goal or {}).get(k) or 0))) for k in ("min_attack", "min_health", "min_crit")}
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Укажи числа"}
+        if not any(mins.values()):
+            return {"ok": False, "error": "Укажи хотя бы один минимум"}
+        # A finished card whose result no longer passes goes back into the queue
+        cards = [dict(c, status="waiting") if c.get("status") == "reached" and not _passes(c.get("result"), mins) else c
+                 for c in current.get("cards") or []]
+        DataManager.set_setting("awaken_reroll", {**current, **mins, "cards": cards})
+        self._log(f"🎲 Перебор пробуждения: новые минимумы — атака {mins['min_attack']}, HP {mins['min_health']}, "
+                  f"крит {mins['min_crit']}%.")
+        left = any(c.get("status") not in ("reached", "missing", "refused") for c in cards)
+        if left and not current.get("active"):
+            self.reroll_resume()
+            return {"ok": True, "resumed": True}
+        return {"ok": True, "resumed": bool(current.get("active"))}
+
+    def reroll_keep(self, card_user_id, kind="stats"):
+        """«Оставить как есть»: the card keeps its last roll and leaves the queue."""
+        key = "seal_reroll" if kind == "seal" else "awaken_reroll"
+        goal = DataManager.get_setting(key)
+        if not goal:
+            return {"ok": False, "error": "Перебор не найден"}
+        cards = []
+        for c in goal.get("cards") or []:
+            if int(c["card_user_id"]) == int(card_user_id) and c.get("history"):
+                last = c["history"][-1]
+                c = dict(c, status="reached", kept=True,
+                         result={"seal": last} if kind == "seal" else last)
+            cards.append(c)
+        left = any(c.get("status") not in ("reached", "missing", "refused") for c in cards)
+        DataManager.set_setting(key, {**goal, "cards": cards, "active": bool(goal.get("active") and left)})
+        return {"ok": True}
+
+    def reroll_stop(self):
+        goal = DataManager.get_setting("awaken_reroll")
+        if goal:
+            DataManager.set_setting("awaken_reroll", {**goal, "active": False})
+        return {"ok": True}
 
     def logout(self):
         self.stop()
@@ -225,8 +568,7 @@ class BuffyApi:
 
     # -------------------------------------------------------------- bot
     def start(self):
-        email, password = DataManager.get_credentials()
-        if not (email and password):
+        if not DataManager.has_login():
             return {"ok": False, "error": "Нет данных для входа"}
         if self._status in ("running", "starting", "restarting"):
             return {"ok": True}
@@ -261,8 +603,7 @@ class BuffyApi:
         toggle = MANUAL_TOGGLES.get(name)
         if toggle and not DataManager.get_setting(toggle, True):
             return {"ok": False, "error": "Модуль выключен — сначала включи его переключатель"}
-        email, password = DataManager.get_credentials()
-        if not (email and password):
+        if not DataManager.has_login():
             return {"ok": False, "error": "Сначала войди в аккаунт"}
         if self._status == "stopping":
             return {"ok": False, "error": "Бот останавливается, попробуй через пару секунд"}
@@ -281,6 +622,8 @@ class BuffyApi:
             stats_callback=lambda **_: None,
         )
         bot.manual_callback = self._on_manual
+        bot.social_relogin = self._silent_social_relogin
+        bot.on_reroll_reached = self._reroll_reached
         bot.fatal_exit = lambda: setattr(bot, "running", False)  # never kill the app over a one-off run
         bot.running = True
         bot.request_manual_module(name)
@@ -323,6 +666,8 @@ class BuffyApi:
         )
         bot.fatal_exit = lambda b=bot: self._on_fatal(b)
         bot.manual_callback = self._on_manual
+        bot.social_relogin = self._silent_social_relogin
+        bot.on_reroll_reached = self._reroll_reached
         self._bot = bot
         self._started_at = time.time()
 
@@ -387,6 +732,9 @@ class BuffyApi:
             last_seq = self._log_seq
         return {
             "status": self._status,
+            "profile": DataManager.get_setting("account_profile"),
+            "reroll": DataManager.get_setting("awaken_reroll"),
+            "seal": DataManager.get_setting("seal_reroll"),
             "uptime_sec": int(time.time() - self._started_at) if self._started_at else 0,
             "now_msk": datetime.now(MSK).isoformat(),
             "cards": {
@@ -545,7 +893,7 @@ class BuffyApi:
 def _halloween_state(today):
     """Candy balance (from the event page) and today's reading drops, or None outside the event."""
     info = DataManager.get_setting("halloween_event_info")
-    if not info:
+    if not info or not DataManager.get_setting("halloween_event_enabled", False):  # event over: no stale tiles
         return None
     day = DataManager.get_setting("halloween_candy_day") or {}
     return {"balance": info.get("balance"), "reading_today": day.get("n", 0) if day.get("date") == today else 0,
@@ -567,38 +915,37 @@ def _tg_error(description):
     return f"Telegram ответил ошибкой: {description}"
 
 
+def _reroll_card_view(c, awake):
+    image = c.get("image")
+    return {"id": int(c["id"]), "name": c.get("card_name") or "", "manga": c.get("manga_name"), "rank": c.get("rank"),
+            "copy": c.get("copy_number"), "awake": awake,
+            "image": f"https://mangabuff.ru/img/cards/{image}" if image else None,
+            "attack": c.get("battle_attack") if awake else None, "health": c.get("battle_health"),
+            "crit": c.get("battle_crit_chance"), "seal": c.get("battle_seal_id")}
+
+
+def _passes(stats, mins):
+    return bool(stats) and stats.get("attack", 0) >= mins["min_attack"] and stats.get("health", 0) >= mins["min_health"] \
+        and stats.get("crit", 0) >= mins["min_crit"]
+
+
+SOCIAL_PROVIDERS = {"vkid": "ВКонтакте", "discord": "Discord", "yandex": "Яндекс", "google": "Google"}
+SOCIAL_LOGIN_TIMEOUT_SEC = 10 * 60
+SOCIAL_SILENT_SEC = 30  # hidden re-login attempt before the window is shown
+
 ISSUE_URL_LIMIT = 7500  # GitHub refuses much longer prefilled URLs
 
-_SECRET_PATTERNS = [
-    (re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b"), "<tg-token>"),
-    (re.compile(r"(\w+://)[^\s/:@]+:[^\s/@]+@"), r"\1<user>:<pass>@"),
-    (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), "<email>"),
-    (re.compile(r"(?i)(token|csrf|cookie|session|password|passwd|secret)([\"']?\s*[:=]\s*[\"']?)[^\s,;\"'&]+"),
-     r"\1\2<hidden>"),
-    (re.compile(r"\b[A-Za-z0-9+/_-]{40,}={0,2}"), "<hidden>"),
-]
-
-
-def mask_secrets(text, secrets=()):
-    for value in secrets:
-        value = str(value or "").strip()
-        if len(value) >= 4:
-            text = text.replace(value, "<hidden>")
-    for rx, repl in _SECRET_PATTERNS:
-        text = rx.sub(repl, text)
-    return text
-
-
-def build_issue_url(description, raw_lines, secrets=(), status=""):
+def build_issue_url(description, raw_lines, secrets=(), status="", report_name=''):
     from config import IS_FROZEN
 
-    desc = mask_secrets((description or "").strip() or "(без описания)", secrets)
+    desc = mask_secrets((description or "").strip() or "(без описания)", secrets)[:350]
     title = desc.splitlines()[0][:80]
     head = (
         f"**Что случилось**\n{desc}\n\n"
         f"**Система**\nBuffy {__version__} · {platform.platform()} · "
         f"{'exe' if IS_FROZEN else 'python'} · бот: {status}\n\n"
-        "<details><summary>Журнал (заполнен автоматически)</summary>\n\n```\n"
+        + (f'**Полный журнал:** прикрепи файл `{report_name}` из открывшейся папки.\n\n' if report_name else '')
+        + "<details><summary>Сокращённый журнал (полный — в файле отчёта)</summary>\n\n```\n"
     )
     tail = "\n```\n</details>\n"
     lines = [mask_secrets(line, secrets)[:400] for line in raw_lines]

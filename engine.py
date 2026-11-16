@@ -4,6 +4,11 @@ from bs4 import BeautifulSoup
 from config import CONFIG, TARGET_RARITIES, BASE_DIR
 import re
 import json
+import uuid
+from html import unescape
+from urllib.parse import urljoin
+from profile_theme import skin_classes, skin_variables, stylesheet_urls, theme_from_variables
+from diagnostics import mask_secrets, reading_response_details
 from utils import (
     parse_smart_number,
     safe_cookies_to_dict,
@@ -62,12 +67,30 @@ ARENA_BATCH_SECONDS = 12 * 60
 # ==========================================
 # BOT ENGINE
 # ==========================================
+# Every plain "спасибо"/"благодарю"/"thank you" sticker on the site (all 186 packs reviewed by eye, 2026-10-31);
+# "спасибо за обмен/заявку" and sarcastic ones are left out. Hearts last as a soft fallback. Only bought packs work.
+THANKS_STICKERS = (
+    "7868", "7812", "7449", "7962", "7825", "7155", "7414", "7999", "8174", "8210", "8236", "8259",
+    "8319", "8377", "7483", "7590", "7670", "8421", "7108", "8336", "4188", "4614", "4447",
+    "7463", "8337",
+)
+THANKS_PHRASES = ("Спасибо за главу!", "Спасибо за перевод!", "Спасибо!", "Благодарю за главу", "Спасибо, ждём продолжения")
+
 EVENT_CANDY_DROPS = 35  # "до 35 раз в сутки, раз в 3 минуты" on /event/pack
 
 
 def event_candy_day(today):
     day = DataManager.get_setting("halloween_candy_day") or {}
     return day if day.get("date") == str(today) else {"date": str(today), "n": 0, "misses": 0}
+
+
+def rerolled_out_of_squad(page_ids, saved_ids):
+    """The site's squad lacks cards that only the awakening reroll removed (unawakening drops them)."""
+    missing = set(saved_ids) - set(page_ids)
+    if not missing or not set(page_ids) <= set(saved_ids):
+        return False
+    rerolled = {int(c["card_user_id"]) for c in (DataManager.get_setting("awaken_reroll") or {}).get("cards") or []}
+    return missing <= rerolled
 
 
 def tower_downtime_hours(now_msk, hours, cup=True):
@@ -241,7 +264,7 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
             try:
                 self.notifier.notify_alert(
                     f"Модуль «{name}» завис",
-                    f"Лимит {timeout_sec // 60} мин. Прерываю; если не отпустит — рестарт.",
+                    f"Лимит {timeout_sec // 60} мин. Прерываю; если не отпустит — перезапущусь сам. Делать ничего не нужно.",
                 )
             except Exception:
                 pass
@@ -402,7 +425,105 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
         self.log("♻️ Сайт ответил 419 (сессия устарела) — вхожу заново и повторяю действие")
         return self.csrf_token if self.login_and_steal_keys() else None
 
+    def adopt_cookie_session(self):
+        """Check the cookies already in self.session on /balance; on success take its CSRF token
+        and user id and save the session. True = logged in, False = guest, None = site unreachable."""
+        res = self.session.get("https://mangabuff.ru/balance", timeout=10)
+        if res.status_code in (401, 419) or (res.status_code == 200 and (
+                "/login" in str(res.url).lower() or "auth-form" in res.text.lower())):
+            return False
+        meta = BeautifulSoup(res.text, "html.parser").find("meta", attrs={"name": "csrf-token"})
+        if res.status_code != 200 or not meta or not meta.get("content"):
+            return None
+        self.csrf_token = meta.get("content")
+        self.session.headers.update({"X-CSRF-TOKEN": self.csrf_token, "X-Requested-With": "XMLHttpRequest",
+                                     "Referer": "https://mangabuff.ru/mine", "Origin": "https://mangabuff.ru"})
+        user = re.search(r"/users/(\d+)", res.text)
+        if user:
+            self.user_id = user.group(1)
+        self._persist_session_cookies()
+        return True
+
+    def refresh_profile(self):
+        """Save nickname, avatar and cover from the site profile for Buffy's account card (cosmetic: never raises)."""
+        try:
+            if not getattr(self, "user_id", None):
+                found = re.search(r"/users/(\d+)", self.session.get("https://mangabuff.ru/balance", timeout=10).text)
+                if not found:
+                    return None
+                self.user_id = found.group(1)
+            res = self.session.get(f"https://mangabuff.ru/users/{self.user_id}", timeout=15)
+            name = re.search(r'class="profile__name" data-name="([^"]*)"', res.text) if res.status_code == 200 else None
+            if not name:
+                return None
+
+            def media(pattern):
+                found = re.search(pattern, res.text)
+                return urljoin("https://mangabuff.ru/", found.group(1)) if found else None
+
+            profile = {
+                **self._profile_theme(res.text),
+                "id": self.user_id,
+                "name": unescape(name.group(1)),
+                "avatar": media(r'class="profile__avatar">\s*<img src="([^"]+)"'),  # often an animated gif
+                "cover": media(r"class=\"profile__background\" style=\"background-image: url\('([^']+)'\)"),
+                "cover_video": media(r'class="profile__cover"[^>]*>\s*<source src="([^"]+)"'),
+            }
+            DataManager.set_setting("account_profile", profile)
+            return profile
+        except Exception:
+            return None
+
+    def _profile_theme(self, page_html):
+        """App colours from the profile skin. The site CSS is ~3 MB, so it is read again
+        only when the skin or the site's stylesheet version changes."""
+        skins, sheets = skin_classes(page_html), stylesheet_urls(page_html)
+        key = "|".join(skins + sheets)
+        old = DataManager.get_setting("account_profile") or {}
+        if old.get("theme_key") == key:
+            return {"theme": old.get("theme") or {}, "theme_key": key}
+        try:
+            css = [self.session.get(urljoin("https://mangabuff.ru/", url), timeout=30).text
+                   for url in sheets] if skins else []
+            return {"theme": theme_from_variables(skin_variables(css, skins)), "theme_key": key}
+        except Exception:
+            return {"theme": old.get("theme") or {}, "theme_key": old.get("theme_key")}
+
+    def use_cookies(self, cookies, user_agent=None):
+        load_cookies_into(self.session, cookies)
+        if user_agent:
+            self.user_agent = user_agent
+            self.session.headers["User-Agent"] = user_agent
+
+    def _restore_social_session(self):
+        """VK/Discord/Yandex/Google accounts have no password: reuse the cookies from Buffy's sign-in window,
+        and when they died, ask Buffy to sign in again through that window (silently if the provider allows)."""
+        self.login_rejected = False
+        try:
+            alive = self.adopt_cookie_session() if self.validate_session() else False
+            relogin = getattr(self, "social_relogin", None)  # set by Buffy; the CLI has no window
+            if alive is False and relogin:
+                fresh = relogin()
+                if fresh:
+                    self.use_cookies(*fresh)
+                    alive = self.adopt_cookie_session()
+        except Exception as e:
+            self.auth_log_buffer.append(tr("log_login_crash", e=e))
+            return False
+        if alive:
+            self.auth_log_buffer.append(tr("log_login_ok"))
+            return True
+        if alive is None:
+            self.auth_log_buffer.append("⚠️ MangaBuff не ответил, вход через соцсеть проверю позже")
+            return False
+        self.login_rejected = True
+        self.auth_log_buffer.append(
+            "❌ Вход через соцсеть устарел: открой Buffy → Настройки → «Сменить аккаунт» и войди заново")
+        return False
+
     def login_and_steal_keys(self):
+        if DataManager.get_setting("login_method") == "social":
+            return self._restore_social_session()
         self.auth_log_buffer.append("Logging in via API...")
         self.login_rejected = False  # True when the site answered and refused the email/password
         try:
@@ -1173,6 +1294,14 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                 items = soup.select(".notifications__item")
                 if not items:
                     continue
+                # A cancelled, declined or accepted trade needs no answer: its notifications can be read
+                # even when no Telegram alert went out (an offer sent and cancelled during the cup).
+                closed_trade_ids = set()
+                for item in items:
+                    if re.search(r"(отменил|отклонил|принял)\w* предложение", item.get_text(" ", strip=True).lower()):
+                        link = item.find("a", href=re.compile(r"/trades/\d+"))
+                        if link:
+                            closed_trade_ids.add(re.search(r"/trades/(\d+)", link["href"]).group(1))
 
                 for item in items:
                     notif_id = item.get("data-id")
@@ -1209,7 +1338,7 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                             link = item.find("a", href=re.compile(r"/trades/\d+"))
                             match = re.search(r"/trades/(\d+)", link.get("href", "")) if link else None
                             trade_id = match.group(1) if match else None
-                        if trade_id and str(trade_id) in delivered_trade_ids:
+                        if trade_id and (str(trade_id) in delivered_trade_ids or str(trade_id) in closed_trade_ids):
                             unwanted_notif_ids.add(notif_id)
                         continue
 
@@ -1291,6 +1420,43 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
         active_trades = self.check_trade_offers()
         return self.clean_unwanted_notifications(active_trade_ids=active_trades)
 
+    def _bookmarked_slugs(self):
+        """Titles in any of the user's bookmark folders (Читаю, Прочитано, ...), refreshed every 6 h."""
+        cached = DataManager.get_setting("bookmark_slugs") or {}
+        if time.time() - float(cached.get("at", 0)) < 6 * 3600:
+            return set(cached.get("slugs", []))
+        old = set(cached["slugs"]) if "slugs" in cached else None  # None: never loaded, do not read blind
+        if not getattr(self, "user_id", None):
+            try:
+                found = re.search(r"/users/(\d+)", self.session.get("https://mangabuff.ru/balance", timeout=10).text)
+            except Exception:
+                found = None
+            if not found:
+                return old
+            self.user_id = found.group(1)
+        base = f"https://mangabuff.ru/users/{self.user_id}/bookmarks"
+        card = re.compile(r'<a\b[^>]*\bbookmark__manga[^>]*>')
+        slug = re.compile(r'href="(?:https://mangabuff\.ru)?/manga/([\w-]+)"')
+        try:
+            first = self.session.get(base, timeout=15)
+            if first.status_code != 200:
+                return old
+            found = set()
+            for folder in sorted(set(re.findall(r'folder_id=(\d+)', first.text))) or [""]:
+                for page in range(1, 30):
+                    res = self.session.get(f"{base}?folder_id={folder}&page={page}", timeout=15)
+                    if res.status_code != 200:
+                        return old | found if old is not None else None  # partial: keep the old list too
+                    got = {m.group(1) for tag in card.findall(res.text) for m in [slug.search(tag)] if m}
+                    if not got - found:
+                        break
+                    found |= got
+        except Exception:
+            return old
+        DataManager.set_setting("bookmark_slugs", {"at": time.time(), "slugs": sorted(found)})
+        self.log(f"📚 Закладки: {len(found)} тайтлов — бот их не читает, чтобы не сбить твой прогресс.")
+        return found
+
     def get_popular_manga_slugs(self):
         """Fetch top manga slugs dynamically from /manga/top with verified fallback."""
         verified = [
@@ -1348,7 +1514,9 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
 
     def read_manga_chapters(self, target_count=None, for_event=False):
         """Read manga chapters to farm bonus cards, sharpening scrolls, and 75-chapter daily quest."""
-        self._last_read_count = 0  # chapters the site accepted in this call
+        # Below the daily cap count only growth confirmed by /balance.
+        # At the cap it cannot grow; retain submitted reads for card/event pacing.
+        self._last_read_count = 0
         if not DataManager.get_setting("reading_enabled", True):
             return
 
@@ -1395,6 +1563,16 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
         progress_map = state.get("progress", {})
 
         manga_list = self.get_popular_manga_slugs()
+        if DataManager.get_setting("reading_skip_bookmarks", True):
+            # Reading a title the owner follows would move their own "stopped at chapter N" mark
+            mine = self._bookmarked_slugs()
+            if mine is None:
+                self.log("⚠️ Не удалось загрузить закладки — чтение отложено, чтобы не сбить твой прогресс.")
+                return False
+            manga_list = [slug for slug in manga_list if slug not in mine]
+        if not manga_list:
+            self.log("⚠️ Нет доступных тайтлов для чтения — повторю позже.")
+            return False
         current_manga = state.get("current_manga", "elised")
         if current_manga in manga_list:
             manga_idx = manga_list.index(current_manga)
@@ -1406,9 +1584,12 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
         cards_gained_session = 0
         scrolls_gained_session = 0
         buffer = []
+        reading_run = uuid.uuid4().hex[:12]
+        reading_batch = 0
 
         try:
             attempts = 0
+            stalled_titles = 0
             while chapters_read_session < target_count and self._alive() and attempts < len(manga_list):
                 self._touch_heartbeat()
                 current_slug = manga_list[manga_idx % len(manga_list)]
@@ -1516,6 +1697,8 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
 
                 skip_bad = 0
                 stale_site_batches = 0
+                title_stalled = False
+                title_credited = False
                 site_chapters_before = (stats or {}).get("chapters_read")
                 for vol, ch, ch_url in unread_chapters:
                     if chapters_read_session >= target_count or not self._alive():
@@ -1536,6 +1719,10 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                             self.log(f"⚠️ Слишком много HTTP-ошибок глав в «{current_slug}», переключаюсь.")
                             break
                         continue
+
+                    if re.search(r"window\.isAuth\s*=\s*(?:0|false)\s*;", ch_res.text):
+                        self.log("⚠️ Глава открылась как гостю — чтение приостановлено до восстановления входа.")
+                        return False
 
                     m_ch = re.search(r"window\.current_chapter\s*=\s*({[^;]+});", ch_res.text)
                     if not m_ch:
@@ -1577,7 +1764,9 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                     if not self._alive():
                         break
 
+                    m_comments = re.search(r'class="comments"[^>]*data-type="mangaChapter"[^>]*data-id="(\d+)"', ch_res.text)
                     buffer.append({
+                        "comment_id": m_comments.group(1) if m_comments else None,
                         "manga_id": manga_id,
                         "chapter_id": chapter_id,
                         "url": ch_url,
@@ -1587,7 +1776,8 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                     })
 
                     # Batch submit (every 1-2 chapters)
-                    if len(buffer) >= 2 or (chapters_read_session + len(buffer)) >= target_count:
+                    if (len(buffer) >= 2 or (chapters_read_session + len(buffer)) >= target_count
+                            or ch_url == unread_chapters[-1][2]):
                         payload = {}
                         for bi, b_item in enumerate(buffer):
                             payload[f"items[{bi}][manga_id]"] = b_item["manga_id"]
@@ -1602,6 +1792,8 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                         }
 
                         try:
+                            reading_batch += 1
+                            request_started = time.monotonic()
                             post_res = self.session.post(
                                 "https://mangabuff.ru/addHistory?r=702",
                                 data=payload,
@@ -1609,9 +1801,17 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                                 timeout=10
                             )
                         except Exception as e:
-                            self.log(f"⚠️ addHistory fail: {e}")
-                            buffer.clear()
-                            continue
+                            self.log(f"⚠️ addHistory fail run={reading_run} batch={reading_batch}: {mask_secrets(str(e))}")
+                            # An ambiguous response is not permission to skip ahead.
+                            return False
+
+                        secrets = (*DataManager.get_credentials(), DataManager.get_setting('proxy', ''))
+                        self.log('🔎 reading_response ' + json.dumps({
+                            'run': reading_run, 'batch': reading_batch,
+                            'chapters': [{'manga': b['slug'], 'vol': b['vol'], 'ch': b['ch']} for b in buffer],
+                            'elapsed_ms': round((time.monotonic() - request_started) * 1000),
+                            'response': reading_response_details(post_res, secrets),
+                        }, ensure_ascii=False))
 
                         # Handle rate limit (429) backoff — do NOT count as read
                         if post_res.status_code == 429:
@@ -1630,8 +1830,43 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                             return False
 
                         if post_res.status_code == 200:
-                            chapters_read_session += len(buffer)
+                            # The reader accepts empty/text responses when no reward
+                            # drops. Reject HTML/login pages and explicit API errors;
+                            # /balance below verifies actual daily credit separately.
+                            body = post_res.text.strip()
+                            if body.startswith("<"):
+                                self.log("⚠️ addHistory вернул HTML вместо ответа API — повторю позже.")
+                                return False
+                            self._comment_after_read(list(buffer))
+                            try:
+                                resp_data = json.loads(body) if body else None
+                            except (ValueError, TypeError):
+                                resp_data = None
+                            if (resp_data is False or (isinstance(resp_data, dict) and
+                                    (resp_data.get("success") is False or resp_data.get("error")
+                                     or resp_data.get("status") == "error"))):
+                                self.log("⚠️ Сайт отклонил запись истории — прогресс не изменён, повторю позже.")
+                                return False
+
+                            live = self.get_reading_stats()
+                            credited = 0
+                            if live:
+                                if site_chapters_before >= stats["chapters_max"]:
+                                    credited = len(buffer)
+                                else:
+                                    credited = min(len(buffer), max(0, live["chapters_read"] - site_chapters_before))
+                            chapters_read_session += credited
+                            title_credited = title_credited or credited > 0
                             self._last_read_count = chapters_read_session
+                            self.log('🔎 reading_credit ' + json.dumps({
+                                'run': reading_run, 'batch': reading_batch,
+                                'before': site_chapters_before,
+                                'after': live['chapters_read'] if live else None,
+                                'cap': stats['chapters_max'], 'counted': credited,
+                                'count_mode': 'submitted_at_cap' if site_chapters_before >= stats['chapters_max'] else 'daily_delta',
+                            }, ensure_ascii=False))
+                            # Keep the submitted cursor even for re-reads; otherwise
+                            # accounts with missing local history retry the same chapters.
                             for b in buffer:
                                 if b["url"] not in read_history:
                                     history_order.append(b["url"])
@@ -1646,7 +1881,6 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
 
                             # Parse drop responses
                             try:
-                                resp_data = post_res.json()
                                 if isinstance(resp_data, dict) and resp_data.get("token") and resp_data.get("type"):
                                     self._take_event_drop(resp_data, headers)
                                 if isinstance(resp_data, dict) and resp_data.get("name"):
@@ -1730,7 +1964,6 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
 
                             # Process the addHistory reward first: a capped chapter
                             # counter cannot tell us whether the card roll succeeded.
-                            live = self.get_reading_stats()
                             if not live:
                                 self.log("⚠️ Статистика после чтения недоступна — продолжу в следующем цикле.")
                                 buffer.clear()
@@ -1746,24 +1979,38 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                             elif site_chapters_before is not None and now_ch <= site_chapters_before:
                                 stale_site_batches += 1
                                 if stale_site_batches >= 2:
-                                    self.log("🛑 Сайт не засчитывает новые главы до лимита — продолжу в следующем цикле.")
+                                    self.log(
+                                        f"📖 «{current_slug}»: две пачки без роста счётчика "
+                                        f"({now_ch}/{now_cap}); возможно, главы уже прочитаны. Беру другой тайтл."
+                                    )
+                                    title_stalled = True
                                     buffer.clear()
-                                    return False
+                                    break
                             else:
                                 stale_site_batches = 0
                             site_chapters_before = now_ch
 
-                            self.log(tr("log_reading_batch", count=chapters_read_session, current=chapters_read_session, total=target_count))
+                            if credited:
+                                self.log(tr("log_reading_batch", count=chapters_read_session, current=chapters_read_session, total=target_count))
+                            else:
+                                self.log(f"📖 История отправлена, но счётчик глав пока не вырос ({now_ch}/{now_cap}).")
 
                         else:
                             self.log(f"⚠️ Ошибка отправки истории (HTTP {post_res.status_code})")
+                            return False
                         buffer.clear()
 
-                if skip_bad >= 25:
+                if chapters_read_session < target_count and self._alive():
                     manga_idx = (manga_idx + 1) % len(manga_list)
                     state["current_manga"] = manga_list[manga_idx]
                     state["manga_idx"] = manga_idx
                     DataManager.save_reading_state(state)
+                # A trailing stale batch after real growth is not a stalled title.
+                if title_stalled or (stale_site_batches and not title_credited):
+                    stalled_titles += 1
+                    if stalled_titles >= 2:
+                        self.log("🛑 На двух тайтлах нет роста счётчика. Чтение приостановлено; следующий цикл начну с другого тайтла.")
+                        return False
 
             state["current_manga"] = manga_list[manga_idx % len(manga_list)]
             state["manga_idx"] = manga_idx
@@ -1790,11 +2037,150 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
     def _event_candies_wanted(self):
         """Keep reading for Halloween candies until today's drops are in, while the event page is live."""
         info = DataManager.get_setting("halloween_event_info")
-        if not info or not DataManager.get_setting("halloween_event_enabled", True)                 or not DataManager.get_setting("reading_enabled", True):
+        if not info or not DataManager.get_setting("halloween_event_enabled", False)                 or not DataManager.get_setting("reading_enabled", True):
             return False
         day = event_candy_day(self._msk_now().date())
         # 6 reads in a row without a drop: the site gives none now, don't read for nothing
         return day["n"] < EVENT_CANDY_DROPS and day.get("misses", 0) < 6
+
+    def _owned_stickers(self):
+        """Sticker ids from the packs this account bought, refreshed once a day."""
+        cached = DataManager.get_setting("owned_stickers") or {}
+        if time.time() - float(cached.get("at", 0)) < 24 * 3600:
+            return set(cached.get("ids", []))
+        headers = {"X-CSRF-TOKEN": self.csrf_token, "X-Requested-With": "XMLHttpRequest"}
+
+        def content(url):
+            res = self.session.post(url, data={"stickerHistory": "[]"}, headers=headers, timeout=15)
+            if res.status_code != 200:
+                raise ValueError(f"HTTP {res.status_code}")
+            try:
+                return res.json().get("content", "")
+            except Exception:
+                return res.text
+        try:
+            picker = content("https://mangabuff.ru/stickers")
+            packs = [re.search(r'data-page="(\d+)"', nav).group(1)
+                     for nav in re.findall(r'<button[^>]*sticker__pack-item[^>]*>.*?</button>', picker, re.S)
+                     if "pack-badge--owned" in nav and re.search(r'data-page="(\d+)"', nav)]
+            ids = set()
+            for pack in packs:
+                ids |= set(re.findall(r'class="sticker__item"[^>]*data-id="(\d+)"', content(f"https://mangabuff.ru/stickers/{pack}")))
+        except Exception:
+            return set(cached.get("ids", []))
+        DataManager.set_setting("owned_stickers", {"at": time.time(), "ids": sorted(ids)})
+        return ids
+
+    def _comment_quest(self):
+        """(done, total) of the daily comment quest on /balance, or None when it cannot be read."""
+        try:
+            res = self.session.get("https://mangabuff.ru/balance", timeout=10)
+        except Exception:
+            return None
+        m = re.search(r"<span>\s*Комментарии\s*</span>\s*<b>\s*(\d+)\s*/\s*(\d+)\s*</b>", res.text) if res.status_code == 200 else None
+        return (int(m.group(1)), int(m.group(2))) if m else None
+
+    def _comment_after_read(self, items):
+        """Owner-only experiment: a thank-you sticker under a chapter the bot really read.
+
+        One per chapter, at most three per title a day and 30-60 min apart (13 in a row under one
+        title looks like the spam the site rules ban), only while the daily quest (N/13) is
+        unfinished, so a deleted comment is simply made up later. Any refusal stops it for the day.
+        The bot reads one title for hours, so chapters read in the last 7 days are kept as a pool,
+        and when the pool has no other title than the previous comment's, a chapter of another
+        title from the bot's whole reading history is used (never a bookmarked title).
+        """
+        if not DataManager.get_setting("comments_enabled", False):
+            return
+        pool = [b for b in DataManager.get_setting("comment_pool") or [] if time.time() - b.get("at", 0) < 7 * 86400]
+        known = {b["comment_id"] for b in pool}
+        pool += [{**{k: b.get(k) for k in ("comment_id", "slug", "vol", "ch", "url")}, "at": time.time()}
+                 for b in items if b.get("comment_id") and b["comment_id"] not in known]
+        per_title = {}
+        for b in reversed(pool):  # newest 30 chapters of each title: one long read must not push the others out
+            per_title.setdefault(b.get("slug"), []).append(b)
+        pool = [b for b in pool if b in per_title[b.get("slug")][:30]]
+        DataManager.set_setting("comment_pool", pool)
+        today = str(self._msk_now().date())
+        day = DataManager.get_setting("comment_day") or {}
+        if day.get("date") != today:
+            day = {"date": today, "chapters": [], "stopped": False}
+        if day.get("stopped") or time.time() - float(day.get("last_at", 0)) < float(day.get("gap", 4 * 60)):
+            return
+        if day.get("quest", 0) >= 13 and time.time() - float(day.get("last_at", 0)) < 3 * 3600:
+            return  # quest done: look again for a deleted comment only every few hours
+        done = day.setdefault("chapters", [])
+        titles = day.setdefault("titles", {})
+        fresh = [b for b in reversed(pool) if not b.get("done") and b["comment_id"] not in done
+                 and titles.get(b.get("slug"), 0) < 3]
+        item = (next((b for b in fresh if b.get("slug") != day.get("last_slug")), None)
+                or self._comment_from_history(pool, titles, day.get("last_slug"))
+                or (fresh[0] if fresh else None))
+        quest = self._comment_quest() if item else None
+        if quest:
+            day["quest"] = quest[0]  # the site's own counter, shown in Telegram
+            DataManager.set_setting("comment_day", day)
+        if not quest or quest[0] >= quest[1]:
+            return
+        bought = self._owned_stickers()
+        owned = [s for s in THANKS_STICKERS if s in bought]
+        if owned:
+            text, sticker = "", random.choice([s for s in owned if s != day.get("last_sticker")] or owned)
+        else:  # no thank-you sticker bought on this account: a short phrase instead
+            text, sticker = random.choice([t for t in THANKS_PHRASES if t != day.get("last_sticker")]), ""
+        try:
+            res = self.session.post("https://mangabuff.ru/comments", data={
+                "text": text, "commentable_id": item["comment_id"], "commentable_type": "mangaChapter",
+                "parent_id": "", "sticker_id": sticker, "is_trade": 0, "is_raffle": 0,
+            }, headers={"Accept": "application/json, text/javascript, */*; q=0.01", "X-CSRF-TOKEN": self.csrf_token,
+                        "X-Requested-With": "XMLHttpRequest", "Referer": item["url"]}, timeout=10)
+            ok, why = res.status_code == 200, f"HTTP {res.status_code}"
+        except Exception as e:
+            ok, why = False, str(e)
+        if ok:
+            done.append(item["comment_id"])
+            titles[item.get("slug")] = titles.get(item.get("slug"), 0) + 1
+            item["done"] = True
+            DataManager.set_setting("comment_pool", pool)
+            day.update(last_at=time.time(), gap=random.randint(30 * 60, 60 * 60), last_slug=item.get("slug"),
+                       last_sticker=sticker or text, quest=quest[0] + 1)
+            self.notifier.tally(comments=1, comment_diamonds=7)  # the site pays 7 💎 per quest comment
+            what = f"Стикер-спасибо #{sticker}" if sticker else f"«{text}»"
+            self.log(f"💬 {what} под «{item['slug']}» т.{item['vol']} гл.{item['ch']} "
+                     f"(задание {quest[0] + 1}/{quest[1]})")
+        else:
+            day["stopped"] = True
+            self.log(f"⚠️ Комментарий не отправлен ({why}) — до завтра больше не пробую")
+            self.notifier.notify_alert("комментарии", f"Сайт не принял стикер под главой ({why}). До завтра бот комментарии не пишет, делать ничего не нужно.")
+        DataManager.set_setting("comment_day", day)
+
+    def _comment_from_history(self, pool, titles, last_slug):
+        """A chapter of another title the bot read before, with its comment id from the chapter page."""
+        bookmarked = self._bookmarked_slugs()
+        if bookmarked is None:
+            return None  # bookmarks unknown: do not risk a comment under a bookmarked title
+        used = {b.get("url") for b in pool}
+        by_slug = {}
+        for url in DataManager.load_reading_state().get("history", []):
+            m = re.search(r"/manga/([\w-]+)/", url)
+            if (m and url not in used and m.group(1) != last_slug and m.group(1) not in bookmarked
+                    and titles.get(m.group(1), 0) < 3):
+                by_slug.setdefault(m.group(1), []).append(url)
+        if not by_slug:
+            return None
+        slug = random.choice(sorted(by_slug))
+        url = random.choice(by_slug[slug])
+        try:
+            res = self.session.get(url, timeout=15)
+            found = re.search(r'class="comments"[^>]*data-type="mangaChapter"[^>]*data-id="(\d+)"', res.text)
+        except Exception:
+            return None
+        if res.status_code != 200 or not found:
+            return None
+        parts = url.rstrip("/").split("/")
+        item = {"comment_id": found.group(1), "slug": slug, "vol": parts[-2], "ch": parts[-1], "url": url, "at": time.time()}
+        pool.append(item)  # remembered, so the chapter is not commented twice
+        return item
 
     def _take_event_drop(self, drop, headers):
         """Event candy/bag that a read chapter dropped: the site page sends its token to /halloween/takeCandy."""
@@ -1810,6 +2196,7 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                 if info.get("balance") is not None:  # the page is re-read every 30 min; keep the count live meanwhile
                     info["balance"] += 3 if drop.get("type") == "pumpkin" else 1
                     DataManager.set_setting("halloween_event_info", info)
+                self.notifier.tally(candies=3 if drop.get("type") == "pumpkin" else 1)
                 self.log(f"🍬 Ивент: подобрал {what} за чтение ({day['n']}/{EVENT_CANDY_DROPS} за сегодня)")
             else:
                 self.log(f"⚠️ Ивент: не удалось подобрать {what} (HTTP {r.status_code})")
@@ -1819,14 +2206,14 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
     def _fetch_latest_card_details(self, card_name=None):
         """Fetch the copy number and image URL of the newest card in user inventory."""
         try:
-            if not self.user_id:
+            if not getattr(self, "user_id", None):
                 res_bal = self.session.get("https://mangabuff.ru/balance", timeout=8)
                 if res_bal.status_code == 200:
                     m = re.search(r'/users/(\d+)', res_bal.text)
                     if m:
                         self.user_id = m.group(1)
 
-            if not self.user_id:
+            if not getattr(self, "user_id", None):
                 return None, None
 
             cards_url = f"https://mangabuff.ru/users/{self.user_id}/cards?sort=new"
@@ -2520,6 +2907,9 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                         crystals = rewards.get("dark_crystals", 0)
                         lvl_ups = len(c_data.get("data", {}).get("level_ups", []))
                         self.log(tr("log_tower_claimed", diamonds=diamonds, crystals=crystals))
+                        extra = {k: v for k, v in rewards.items() if k not in ("diamonds", "dark_crystals") and v}
+                        if extra:  # club crystals and other items; logged so the real drop rate can be counted
+                            self.log(f"💠 Башня: ещё в награде {json.dumps(extra, ensure_ascii=False)[:300]}")
                         self.notifier.notify_tower_claimed(diamonds, crystals, lvl_ups)
                     except Exception as e:
                         self.log(f"⚠️ Tower claim parse error: {e}")
@@ -2564,10 +2954,11 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                         if cid and str(cid).isdigit() and int(cid) not in card_ids:
                             card_ids.append(int(cid))
 
+                saved_squad = [int(x) for x in DataManager.get_setting("tower_squad") or [] if str(x).isdigit()][:4]
                 if not card_ids:
-                    saved_squad = DataManager.get_setting("tower_squad")
-                    if isinstance(saved_squad, list) and len(saved_squad) > 0:
-                        card_ids = [int(x) for x in saved_squad if str(x).isdigit()][:4]
+                    card_ids = saved_squad
+                elif rerolled_out_of_squad(card_ids, saved_squad):
+                    card_ids = saved_squad  # the awakening reroll took a card out of the squad on the site
 
                 if card_ids:
                     DataManager.set_setting("tower_squad", card_ids)
@@ -2633,7 +3024,6 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                             dur_hours = duration_mins // 60
                             self.log(tr("log_tower_started", diff=difficulty.capitalize(), dur=dur_hours))
                             DataManager.set_setting("tower_no_squad", False)
-                            self.notifier.notify_tower_started(difficulty.capitalize(), dur_hours, ends_at)
                             return max(60, int(rem_sec))
                         except Exception:
                             return duration_mins * 60
@@ -2745,7 +3135,14 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
         saved_index = tracker.get("tier_index", -1)
         saved_icon = tracker.get("icon", "")
 
-        if current_index > saved_index:
+        # Highest tier already announced: bouncing between two tiers on a weak deck must not re-announce it
+        best_index = tracker.get("best_index", saved_index)
+        if saved_index > current_index >= saved_index - 1 or saved_index < current_index <= best_index:
+            tracker.update(current_tier=current_tier, tier_index=current_index, icon=current_icon,
+                           division=current_division, best_index=best_index)
+            DataManager.set_setting("arena_rank_tracker", tracker)
+
+        elif current_index > saved_index:
             total_battles = tracker["battles_in_tier"]
             total_wins = tracker["wins_in_tier"]
             total_losses = tracker["losses_in_tier"]
@@ -2778,7 +3175,7 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
             DataManager.set_setting("arena_rank_tracker", tracker)
 
         elif current_index < saved_index:
-            # Rank dropped or season reset
+            # Dropped two tiers or more: a season reset, announce climbing again
             tracker = {
                 "current_tier": current_tier,
                 "tier_index": current_index,
@@ -2870,6 +3267,11 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
             if not m:
                 return None
             earned_essence = int(m.group(1))
+            # Item drops the site shows under a win; logged so the real drop rate can be counted
+            for key, label in (("club_crystals", "клубный кристалл"), ("advertising_beacons", "предмет для рекламы")):
+                drop = re.search(r'"%s"\s*:\s*\[(.*?)\]' % key, res.text)
+                if drop and drop.group(1).strip():
+                    self.log(f"💠 Арена: выпал {label} ({drop.group(1).count('{') or 1} шт.)")
 
             # 2. Parse win status
             is_win = None
@@ -3404,7 +3806,7 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                     self.log(f"✅ Вход восстановлен с {attempt + 1}-й попытки.")
                     self.notifier.notify_alert(
                         "вход на MangaBuff восстановлен",
-                        f"Авторизация прошла с {attempt + 1}-й попытки, продолжаю работу.",
+                        f"Авторизация прошла с {attempt + 1}-й попытки, продолжаю работу.", icon="✅",
                     )
                 return True
 
@@ -3494,6 +3896,8 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
         "reading": ("Чтение глав", 20 * 60),
         "club": ("Клуб", 4 * 60),
         "seasonal": ("Ивенты", 2 * 60),
+        "awaken": ("Перебор пробуждения", 60 * 60),
+        "seals": ("Перековка печати", 15 * 60),
     }
 
     def request_manual_module(self, name):
@@ -3571,6 +3975,39 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                 return f"{visit}, награда дня забрана"
             reward = "награда дня забрана" if self.daily_reward_claimed else "награду дня забрать не получилось"
             return ManualFailed(f"{visit}; {reward}. Работающий бот повторит сам, или запусти ещё раз позже")
+        if name == "seals":
+            rolls = self.run_seal_reroll(max_rolls=40)
+            goal = DataManager.get_setting("seal_reroll") or {}
+            left = [c for c in goal.get("cards") or [] if c.get("status") not in ("reached", "missing", "refused")]
+            if not left:
+                return f"перековок: {rolls}, все выбранные карты получили нужную печать"
+            return f"перековок: {rolls}; продолжу позже" if rolls else \
+                ManualFailed("эссенции не хватает или достигнут лимит — бот продолжит, когда она появится")
+        if name == "awaken":
+            deadline, rolls, drops = time.time() + 50 * 60, 0, 0  # inside the 60-minute module limit
+            while True:
+                try:
+                    rolls += self.run_awaken_reroll(max_rolls=10 ** 6, max_seconds=max(60, deadline - time.time()))
+                    break
+                except ValueError:  # the site refused something: not a connection problem
+                    raise
+                except Exception as e:  # dropped connection or proxy hiccup: the next pass re-reads the card from the site
+                    drops += 1
+                    if drops > 5 or time.time() > deadline - 90 or not self._alive():
+                        raise
+                    self.log(f"🌐 Перебор пробуждения: связь оборвалась ({str(e)[:80]}) — повторю через 30 с")
+                    time.sleep(30)
+            goal = DataManager.get_setting("awaken_reroll") or {}
+            left = [c["name"] for c in goal.get("cards") or [] if c.get("status") not in ("reached", "missing", "refused")]
+            if not left:
+                return f"бросков: {rolls}, все выбранные карты готовы"
+            if not rolls and not goal.get("active"):
+                return ManualFailed("перебор не включён — выбери карты и нажми «Начать» на странице «Пробуждение»")
+            if not rolls and 19 <= self._msk_now().hour < 22:
+                return ManualFailed("во время кубка (19–22 МСК) колоду не трогаю — перебор продолжится после 22:00")
+            if rolls and not getattr(self, "_reroll_out_of_energy", False):
+                return f"бросков: {rolls}; цель не выбита, запусти ещё раз или бот продолжит сам"
+            return f"бросков: {rolls}; энергия кончилась, продолжу, когда бои её накопят" if rolls else                 ManualFailed("энергии пробуждения нет — бот продолжит, когда бои её накопят")
         if name == "mining":
             out = {"energy": 0}
             self._mining_step(msk_today, out)
@@ -3760,6 +4197,8 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
 
         # Warm / refresh DDoS-Guard cookies up front (proxy required on VPS)
         self.ensure_site_access()
+        self.refresh_profile()
+        self.refresh_halloween_info()
 
         # Fill the stats panel now instead of after the first full cycle
         try:
@@ -3940,13 +4379,21 @@ class MangaMinerBot(ArenaAutomationMixin, ClubAutomationMixin, SeasonalWatchMixi
                         self._run_module("club", self.run_club_cycle, 4 * 60)
                         self._last_club_check_at = now_ts
 
+                # 4.55. Thank-you comments from the pool of read chapters: not only right after a read,
+                # since reading stops for the day once the 10 bonus cards are in
+                if self.running:
+                    try:
+                        self._comment_after_read([])
+                    except Exception as e:
+                        self.log(f"⚠️ Комментарии: {e}")
+
                 # 4.6. Seasonal pages watch (Halloween / event) — TG when they go live
                 if self.running and DataManager.get_setting("seasonal_watch_enabled", True):
                     self._run_module("seasonal", self.run_seasonal_watch, 2 * 60)
                 # Owner-only watcher for new site features; off unless enabled in settings
                 if self.running and DataManager.get_setting("site_watch_enabled", False):
                     self._run_module("site_watch", self.run_site_watch, 3 * 60)
-                if (self.running and DataManager.get_setting("halloween_event_enabled", True)
+                if (self.running and DataManager.get_setting("halloween_event_enabled", False)
                         and time.time() - getattr(self, "_halloween_event_at", 0) >= 30 * 60):
                     self._halloween_event_at = time.time()
                     self._run_module("halloween_event", self.run_halloween_event, 2 * 60)
